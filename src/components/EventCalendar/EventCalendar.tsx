@@ -74,6 +74,7 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
   );
 
   const mergedStyles: CalendarProps<Dayjs>['styles'] = (info) => {
+    debugger;
     const overrides = typeof calendarStyles === 'function' ? calendarStyles(info) : calendarStyles;
     return {
       ...overrides,
