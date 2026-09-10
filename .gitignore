@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build and test output
+build/
+dist/
+coverage/
+*.tsbuildinfo
+.cache/
+
+# Local environment variables
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# Editor history and operating system files
+.history/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo

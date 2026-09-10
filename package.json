@@ -1,0 +1,30 @@
+{
+  "browserslist": [
+    ">0.2%",
+    "not dead"
+  ],
+  "dependencies": {
+    "@ant-design/icons": "^6.3.4",
+    "@emotion/react": "^11.14.0",
+    "antd": "6.6.3",
+    "clsx": "^2.1.1",
+    "dayjs": "^1.11.11",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "^19.2.3",
+    "react-scripts": "^5.0.1",
+    "typescript": "^5.0.2"
+  },
+  "main": "index.js",
+  "scripts": {
+    "build": "react-scripts build",
+    "eject": "react-scripts eject",
+    "start": "react-scripts start",
+    "test": "react-scripts test --env=jsdom"
+  },
+  "title": "跨日期事件 - antd@6.6.3"
+}
