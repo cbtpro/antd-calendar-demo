@@ -21,6 +21,7 @@ const getRangePosition = (date: Dayjs, event: CalendarEvent): EventRenderInfo['p
 function EventCalendar<T extends CalendarEvent = CalendarEvent>({
   events,
   renderEvent,
+  onEventClick,
   ...calendarProps
 }: EventCalendarProps<T>) {
   const { token } = theme.useToken();
@@ -50,7 +51,30 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
                   key={event.key}
                   css={[styles.bar, rangeStyle]}
                   title={event.title}
+                  role={onEventClick ? 'button' : undefined}
+                  tabIndex={onEventClick ? 0 : undefined}
+                  aria-label={event.title}
+                  onClick={(clickEvent) => {
+                    // 任务交互不向日期单元格冒泡，保留日历自身的日期选择逻辑。
+                    clickEvent.stopPropagation();
+                    onEventClick?.(event, { date, lane: event.lane, position });
+                  }}
+                  onKeyDown={(keyEvent) => {
+                    // 避免日历响应任务上的键盘操作；自定义内容自行处理内部交互。
+                    keyEvent.stopPropagation();
+                    if (
+                      onEventClick &&
+                      keyEvent.target === keyEvent.currentTarget &&
+                      (keyEvent.key === 'Enter' || keyEvent.key === ' ')
+                    ) {
+                      keyEvent.preventDefault();
+                      if (!keyEvent.repeat) {
+                        onEventClick(event, { date, lane: event.lane, position });
+                      }
+                    }
+                  }}
                   style={{
+                    cursor: onEventClick ? 'pointer' : undefined,
                     backgroundColor: event.color ?? token.colorPrimary,
                     gridRow: event.lane + 1,
                   }}
@@ -67,7 +91,7 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
         </div>
       );
     },
-    [layoutEvents, renderEvent, styles, token.colorPrimary],
+    [layoutEvents, renderEvent, onEventClick, styles, token.colorPrimary],
   );
 
   return <Calendar {...calendarProps} css={styles.calendar} dateCellRender={dateCellRender} />;

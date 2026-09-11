@@ -49,7 +49,7 @@ calendar: css`
 
 ### 教程目标与仓库验证版本
 
-本文组件采用面向 antd 5 的 API 和样式写法，但当前演示仓库的 `package.json` 仍声明 `antd: 6.6.3`，已有构建验证也在该版本下完成。文档中的依赖清单如实保留仓库配置，不表示已经将工程整体降级并验证过 antd 5。
+当前演示仓库使用 `antd: 5.0.2`，日期渲染采用该版本支持的 `dateCellRender`。前面的 `cellRender` 说明用于理解较新版本的适配：5.4.0 及以上可以使用 `cellRender`；本文完整源码保留对 5.0.2 的支持。
 
 在公司已有 antd 5 项目中，可保留该项目现有的 React、构建工具与依赖版本，接入本文组件并按第 8 节验证；不需要照搬演示仓库的整份 `package.json`。内部 CSS 类名、间距和跨天条接缝仍需在实际使用的 antd 5 小版本中核对。
 
@@ -90,7 +90,7 @@ cd event-calendar-demo
 mkdir -p public src/components/EventCalendar
 ```
 
-下面提供当前项目的依赖声明。`antd` 固定为 `6.6.3`，组件样式不依赖 v6 的 `styles`/`classNames` 接口，使用 Emotion 嵌套选择器以兼容 Ant Design 5（`cellRender` 要求至少 5.4.0）。`@ant-design/icons` 和 `clsx` 是现有项目保留的依赖，本实现没有直接使用它们；也不需要 `antd-style`。
+下面提供当前项目的依赖声明。`antd` 固定为 `5.0.2`，组件使用 `dateCellRender` 和 Emotion 嵌套选择器，不依赖 v6 的 `styles`/`classNames` 接口。`@ant-design/icons` 和 `clsx` 是现有项目保留的依赖，本实现没有直接使用它们；也不需要 `antd-style`。
 
 创建 `package.json`：
 
@@ -103,7 +103,7 @@ mkdir -p public src/components/EventCalendar
   "dependencies": {
     "@ant-design/icons": "^6.3.4",
     "@emotion/react": "^11.14.0",
-    "antd": "6.6.3",
+    "antd": "5.0.2",
     "clsx": "^2.1.1",
     "dayjs": "^1.11.11",
     "react": "^19.0.0",
@@ -258,6 +258,8 @@ export type EventCalendarProps<T extends CalendarEvent = CalendarEvent> = Omit<
   events: readonly T[];
   /** 自定义任务在每天的片段内容，同时保留组件的布局。 */
   renderEvent?: (event: T, info: EventRenderInfo) => ReactNode;
+  /** 点击任务片段时触发，由业务方展示详情；不会触发日期选择。 */
+  onEventClick?: (event: T, info: EventRenderInfo) => void;
 };
 ```
 
@@ -516,12 +518,12 @@ CSS Grid 行号从 1 开始，算法从 0 开始，所以需要 `+ 1`。即使�
 
 ## 6. 封装 EventCalendar
 
-Calendar 的 `cellRender` 提供日期和单元格类型。我们只为日期单元格绘制任务条；年视图的月份单元格不绘制任务。[Calendar API 来源](https://ant.design/components/calendar/)
+当前 Calendar 的 `dateCellRender` 提供日期，我们只为日期单元格绘制任务条；年视图的月份单元格不绘制任务。[Calendar API 来源](https://ant.design/components/calendar/)
 
 组件流程：
 
 1. `useMemo` 根据整个 `events` 数组计算布局。
-2. 在 `cellRender` 中筛选 `start ≤ date ≤ end` 的任务。
+2. 在 `dateCellRender` 中筛选 `start ≤ date ≤ end` 的任务。
 3. 判断片段位置，选择首段、末段或中间段样式。
 4. 使用预先分配的 `lane` 定位，按任务颜色或主题主色绘制。
 5. 若传入 `renderEvent`，由业务方生成片段内容。
@@ -553,16 +555,15 @@ const getRangePosition = (date: Dayjs, event: CalendarEvent): EventRenderInfo['p
 function EventCalendar<T extends CalendarEvent = CalendarEvent>({
   events,
   renderEvent,
+  onEventClick,
   ...calendarProps
 }: EventCalendarProps<T>) {
   const { token } = theme.useToken();
   const { styles } = useStyle(calendarProps.prefixCls);
   const layoutEvents = useMemo(() => assignEventLanes(events), [events]);
 
-  const cellRender = useCallback<NonNullable<CalendarProps<Dayjs>['cellRender']>>(
-    (date, info) => {
-      if (info.type !== 'date') return null;
-
+  const dateCellRender = useCallback<NonNullable<CalendarProps<Dayjs>['dateCellRender']>>(
+    (date) => {
       const currentEvents = layoutEvents.filter(
         (event) => !date.isBefore(event.start, 'day') && !date.isAfter(event.end, 'day'),
       );
@@ -584,7 +585,30 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
                   key={event.key}
                   css={[styles.bar, rangeStyle]}
                   title={event.title}
+                  role={onEventClick ? 'button' : undefined}
+                  tabIndex={onEventClick ? 0 : undefined}
+                  aria-label={event.title}
+                  onClick={(clickEvent) => {
+                    // 任务交互不向日期单元格冒泡，保留日历自身的日期选择逻辑。
+                    clickEvent.stopPropagation();
+                    onEventClick?.(event, { date, lane: event.lane, position });
+                  }}
+                  onKeyDown={(keyEvent) => {
+                    // 避免日历响应任务上的键盘操作；自定义内容自行处理内部交互。
+                    keyEvent.stopPropagation();
+                    if (
+                      onEventClick &&
+                      keyEvent.target === keyEvent.currentTarget &&
+                      (keyEvent.key === 'Enter' || keyEvent.key === ' ')
+                    ) {
+                      keyEvent.preventDefault();
+                      if (!keyEvent.repeat) {
+                        onEventClick(event, { date, lane: event.lane, position });
+                      }
+                    }
+                  }}
                   style={{
+                    cursor: onEventClick ? 'pointer' : undefined,
                     backgroundColor: event.color ?? token.colorPrimary,
                     gridRow: event.lane + 1,
                   }}
@@ -601,10 +625,10 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
         </div>
       );
     },
-    [layoutEvents, renderEvent, styles, token.colorPrimary],
+    [layoutEvents, renderEvent, onEventClick, styles, token.colorPrimary],
   );
 
-  return <Calendar {...calendarProps} css={styles.calendar} cellRender={cellRender} />;
+  return <Calendar {...calendarProps} css={styles.calendar} dateCellRender={dateCellRender} />;
 }
 
 export default EventCalendar;
@@ -612,7 +636,7 @@ export default EventCalendar;
 
 Ant Design 5 没有 Calendar 的 `styles` 接口，因此使用 `css={styles.calendar}`。Emotion 将其转换为根节点的 className，嵌套选择器只影响当前日历。`&&&` 提高选择器优先级，以覆盖组件默认 overflow。通过 `ConfigProvider.ConfigContext.getPrefixCls` 获取与 Calendar 一致的前缀，也兼容全局或单组件自定义 prefixCls。可以继续用 `className` 引用业务 CSS，或用 `style` 设置根节点行内样式。
 
-此方案依据 [Ant Design 5 Calendar 源码](https://github.com/ant-design/ant-design/blob/5.29.3/components/calendar/generateCalendar.tsx) 的内部类名实现；升级组件库时应核对 DOM 类名。当前项目仍安装 antd 6，未改动内网项目的依赖。
+此方案依据 [Ant Design 5 Calendar 源码](https://github.com/ant-design/ant-design/blob/5.29.3/components/calendar/generateCalendar.tsx) 的内部类名实现；升级组件库时应核对 DOM 类名。当前 demo 使用 antd 5.0.2，内网项目可按自己的小版本验证。
 
 `useMemo` 的依赖是数组引用。更新任务时请创建新数组，例如 `setEvents(previous => [...previous, newEvent])`，不要原地 `push` 后仍传入同一个数组。
 
@@ -636,7 +660,7 @@ export type { CalendarEvent, EventCalendarProps, EventRenderInfo } from './types
 ```tsx
 import React from 'react';
 
-import { theme } from 'antd';
+import { Descriptions, Modal, theme } from 'antd';
 import dayjs from 'dayjs';
 
 import EventCalendar from './components/EventCalendar';
@@ -754,8 +778,39 @@ const getEvents = (token: ReturnType<typeof theme.useToken>['token']): CalendarE
 const App: React.FC = () => {
   const { token } = theme.useToken();
   const events = React.useMemo(() => getEvents(token), [token]);
+  const [selectedEvent, setSelectedEvent] = React.useState<CalendarEvent | null>(null);
 
-  return <EventCalendar events={events} defaultValue={dayjs('2026-01-01')} />;
+  return (
+    <>
+      <EventCalendar
+        events={events}
+        defaultValue={dayjs('2026-01-01')}
+        onEventClick={(event) => setSelectedEvent(event)}
+      />
+      <Modal
+        title="任务详情"
+        open={selectedEvent !== null}
+        onCancel={() => setSelectedEvent(null)}
+        footer={null}
+      >
+        {selectedEvent && (
+          <Descriptions column={1}>
+            <Descriptions.Item label="任务名称">{selectedEvent.title}</Descriptions.Item>
+            <Descriptions.Item label="任务标识">{selectedEvent.key}</Descriptions.Item>
+            <Descriptions.Item label="开始日期">
+              {selectedEvent.start.format('YYYY-MM-DD')}
+            </Descriptions.Item>
+            <Descriptions.Item label="结束日期">
+              {selectedEvent.end.format('YYYY-MM-DD')}
+            </Descriptions.Item>
+            <Descriptions.Item label="持续天数">
+              {selectedEvent.end.startOf('day').diff(selectedEvent.start.startOf('day'), 'day') + 1} 天
+            </Descriptions.Item>
+          </Descriptions>
+        )}
+      </Modal>
+    </>
+  );
 };
 
 export default App;
@@ -782,6 +837,16 @@ createRoot(container).render(<Demo />);
 ```
 
 入口检查容器是否存在，既满足 TypeScript 严格空值检查，也使模板配置错误更容易定位。当前任务样式都在 hook 中，不依赖独立的全局 CSS 文件。
+
+### 7.1 点击任务，由业务方展示详情
+
+`onEventClick(event, info)` 接收被点击的任务及片段上下文：`date` 是点击日期，`lane` 是泳道编号，`position` 是片段位置。泛型任务上的业务字段会保留。任务条的首段、中间段和末段都可以点击。
+
+组件先调用 `stopPropagation()`，再调用外部回调，阻止点击冒泡到日期单元格。即使没有传入回调，点击任务也不会触发日期选择。日期空白区域继续由 Calendar 处理，`onSelect`、`onChange` 无需拦截或改写。
+
+传入回调后，任务条可通过 Tab 聚焦，Enter 或空格键触发回调；键盘事件也不会冒泡到日历。自定义渲染内容若有按钮等内部交互，可以自行阻止冒泡，避免触发外层任务回调。
+
+demo 用 `selectedEvent` 保存点击的任务，并通过声明式 `Modal` 显示标题、标识、起止日期和持续天数。通用组件不管理弹窗状态，业务方可替换为抽屉、详情页或自己的弹窗。
 
 ## 8. 启动和验收
 
@@ -880,6 +945,8 @@ node scripts/check-event-layout.cjs
 | 单日任务 | 查看 1 月 20 日的页码修复 | 只有一段，左右圆角都有 |
 | 跨周 | 查看跨越周末的异步导出任务 | 每天仍使用相同行位 |
 | 跨月 | 查看 1 月 30 日到 2 月 3 日的灰度观察 | 切到 2 月后仍在同一行位，最后一天显示末段 |
+| 点击任务 | 点击首段、中间段、末段，或聚焦后按 Enter/空格 | 打开详情，不改变选中日期，不触发日期回调 |
+| 点击日期空白 | 点击没有任务条覆盖的日期区域 | 正常触发日期选择 |
 | 空数据 | 临时传入 `events={[]}` | 保留日历，无任务条 |
 | 长标题 | 缩小浏览器宽度 | 标题省略，不撑宽日期列；悬停显示标题 |
 | 数据更新 | 以新数组替换 events | 按新数据重新分配与渲染 |
@@ -982,6 +1049,6 @@ git commit -m "feat: add reusable event calendar"
 
 ## 12. 后续扩展方向
 
-本教程已经完成从数据到布局再到封装的实现。若业务需要更多能力，可分别增加日期索引加速、任务详情交互、周起点标签、高密度任务折叠、服务端数据接入或数据变化后的持久行位策略。每项扩展都应保持「先统一分配行位，再按日期筛选并使用固定行号渲染」的基本流程。
+本教程已经完成从数据到布局再到封装的实现。若业务需要更多能力，可分别增加日期索引加速、任务详情编辑、周起点标签、高密度任务折叠、服务端数据接入或数据变化后的持久行位策略。每项扩展都应保持「先统一分配行位，再按日期筛选并使用固定行号渲染」的基本流程。
 
 快速 API 说明见 [组件 README](../src/components/EventCalendar/README.md)，完整源码见 [组件目录](../src/components/EventCalendar/)。

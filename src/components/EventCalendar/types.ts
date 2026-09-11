@@ -33,4 +33,6 @@ export type EventCalendarProps<T extends CalendarEvent = CalendarEvent> = Omit<
   events: readonly T[];
   /** 自定义任务在每天的片段内容，同时保留组件的布局。 */
   renderEvent?: (event: T, info: EventRenderInfo) => ReactNode;
+  /** 点击任务片段时触发，由业务方展示详情；不会触发日期选择。 */
+  onEventClick?: (event: T, info: EventRenderInfo) => void;
 };

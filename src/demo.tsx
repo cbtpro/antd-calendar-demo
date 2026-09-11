@@ -1,6 +1,6 @@
 import React from 'react';
 
-import { theme } from 'antd';
+import { Descriptions, Modal, theme } from 'antd';
 import dayjs from 'dayjs';
 
 import EventCalendar from './components/EventCalendar';
@@ -118,8 +118,39 @@ const getEvents = (token: ReturnType<typeof theme.useToken>['token']): CalendarE
 const App: React.FC = () => {
   const { token } = theme.useToken();
   const events = React.useMemo(() => getEvents(token), [token]);
+  const [selectedEvent, setSelectedEvent] = React.useState<CalendarEvent | null>(null);
 
-  return <EventCalendar events={events} defaultValue={dayjs('2026-01-01')} />;
+  return (
+    <>
+      <EventCalendar
+        events={events}
+        defaultValue={dayjs('2026-01-01')}
+        onEventClick={(event) => setSelectedEvent(event)}
+      />
+      <Modal
+        title="任务详情"
+        open={selectedEvent !== null}
+        onCancel={() => setSelectedEvent(null)}
+        footer={null}
+      >
+        {selectedEvent && (
+          <Descriptions column={1}>
+            <Descriptions.Item label="任务名称">{selectedEvent.title}</Descriptions.Item>
+            <Descriptions.Item label="任务标识">{selectedEvent.key}</Descriptions.Item>
+            <Descriptions.Item label="开始日期">
+              {selectedEvent.start.format('YYYY-MM-DD')}
+            </Descriptions.Item>
+            <Descriptions.Item label="结束日期">
+              {selectedEvent.end.format('YYYY-MM-DD')}
+            </Descriptions.Item>
+            <Descriptions.Item label="持续天数">
+              {selectedEvent.end.startOf('day').diff(selectedEvent.start.startOf('day'), 'day') + 1} 天
+            </Descriptions.Item>
+          </Descriptions>
+        )}
+      </Modal>
+    </>
+  );
 };
 
 export default App;
