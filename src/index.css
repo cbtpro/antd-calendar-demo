@@ -14,3 +14,14 @@
  * limitations under the License.
  */
 
+@supports (scrollbar-gutter: stable) {
+  html.event-calendar-demo {
+    /* 弹窗隐藏滚动条时仍保留占位，避免日历列宽变化。 */
+    scrollbar-gutter: stable;
+  }
+
+  html.event-calendar-demo body {
+    /* 浏览器已经预留空间，无需弹窗再次缩减页面宽度；保留滚动锁定。 */
+    width: auto;
+  }
+}

@@ -173,7 +173,7 @@ event-calendar-demo/
 
 ```html
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="event-calendar-demo">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -826,6 +826,7 @@ export default App;
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import Demo from './demo';
+import './index.css';
 
 const container = document.getElementById('container');
 
@@ -836,7 +837,7 @@ if (!container) {
 createRoot(container).render(<Demo />);
 ```
 
-入口检查容器是否存在，既满足 TypeScript 严格空值检查，也使模板配置错误更容易定位。当前任务样式都在 hook 中，不依赖独立的全局 CSS 文件。
+入口检查容器是否存在，既满足 TypeScript 严格空值检查，也使模板配置错误更容易定位。任务条样式集中在 hook 中；入口还引入 `index.css`，用于下面的页面滚动条占位优化。
 
 ### 7.1 点击任务，由业务方展示详情
 
@@ -847,6 +848,32 @@ createRoot(container).render(<Demo />);
 传入回调后，任务条可通过 Tab 聚焦，Enter 或空格键触发回调；键盘事件也不会冒泡到日历。自定义渲染内容若有按钮等内部交互，可以自行阻止冒泡，避免触发外层任务回调。
 
 demo 用 `selectedEvent` 保存点击的任务，并通过声明式 `Modal` 显示标题、标识、起止日期和持续天数。通用组件不管理弹窗状态，业务方可替换为抽屉、详情页或自己的弹窗。
+
+### 7.2 避免详情弹窗引起页面宽度变化
+
+弹窗会锁定背景滚动。传统滚动条消失后，可用页面宽度会变化；当前弹窗依赖还会设置 body 宽度来补偿滚动条。可以用 `scrollbar-gutter: stable` 固定滚动条占位，并取消重复的宽度补偿。[属性说明](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/scrollbar-gutter)
+
+在 HTML 根元素添加 `class="event-calendar-demo"`（上方模板已包含），创建 `src/index.css`：
+
+```css
+@supports (scrollbar-gutter: stable) {
+  html.event-calendar-demo {
+    /* 弹窗隐藏滚动条时仍保留占位，避免日历列宽变化。 */
+    scrollbar-gutter: stable;
+  }
+
+  html.event-calendar-demo body {
+    /* 浏览器已经预留空间，无需弹窗再次缩减页面宽度；保留滚动锁定。 */
+    width: auto;
+  }
+}
+```
+
+入口通过 `import './index.css'` 加载。该规则只作用于 demo 页面，不写入可复用日历组件。`html.event-calendar-demo body` 的优先级高于当前弹窗注入的 `html body`，仅覆盖 width，不覆盖 overflow，因此背景仍然无法滚动。
+
+`@supports` 保证只有支持该属性的浏览器才取消宽度补偿；旧浏览器继续使用弹窗原有补偿。浮层滚动条不占布局宽度，此属性不会为它额外留空。接入其他项目时应结合其滚动容器及弹窗库的补偿方式调整。
+
+验收时分别在页面有、无纵向滚动条的情况下反复打开与关闭详情，检查日历左右边缘不移动，弹窗打开期间背景不可滚动，关闭后恢复原滚动位置。
 
 ## 8. 启动和验收
 
