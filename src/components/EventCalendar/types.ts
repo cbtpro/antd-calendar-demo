@@ -3,13 +3,13 @@ import type { CalendarProps } from 'antd';
 import type { Dayjs } from 'dayjs';
 
 export interface CalendarEvent {
-  /** Unique within this calendar. */
+  /** 在当前日历中唯一的任务标识。 */
   key: string;
   title: string;
-  /** Both start and end dates are inclusive. */
+  /** 开始日期和结束日期都计入任务占用范围。 */
   start: Dayjs;
   end: Dayjs;
-  /** Defaults to the current theme's primary color. */
+  /** 默认使用当前主题的主色。 */
   color?: string;
 }
 
@@ -21,6 +21,8 @@ export interface EventRenderInfo {
 
 export type EventCalendarProps<T extends CalendarEvent = CalendarEvent> = Omit<
   CalendarProps<Dayjs>,
+  | 'styles'
+  | 'classNames'
   | 'cellRender'
   | 'fullCellRender'
   | 'dateCellRender'
@@ -29,6 +31,6 @@ export type EventCalendarProps<T extends CalendarEvent = CalendarEvent> = Omit<
   | 'monthFullCellRender'
 > & {
   events: readonly T[];
-  /** Customizes each daily segment's content while retaining its layout. */
+  /** 自定义任务在每天的片段内容，同时保留组件的布局。 */
   renderEvent?: (event: T, info: EventRenderInfo) => ReactNode;
 };

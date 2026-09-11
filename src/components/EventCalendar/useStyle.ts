@@ -1,8 +1,10 @@
-import { useMemo } from 'react';
+import { useContext, useMemo } from 'react';
 import { css } from '@emotion/react';
-import { theme } from 'antd';
+import { ConfigProvider, theme } from 'antd';
 
-const useStyle = () => {
+const useStyle = (customizePrefixCls?: string) => {
+  const { getPrefixCls } = useContext(ConfigProvider.ConfigContext);
+  const prefixCls = getPrefixCls('picker', customizePrefixCls);
   const { token } = theme.useToken();
 
   const styles = useMemo(() => {
@@ -20,7 +22,12 @@ const useStyle = () => {
     } = token;
 
     return {
-      itemContent: { overflow: 'visible' as const },
+      calendar: css`
+        /* 仅作用于当前日历，覆盖 Ant Design 默认的溢出设置。 */
+        &&& .${prefixCls}-calendar-date-content {
+          overflow: visible;
+        }
+      `,
       cell: css`
         min-height: ${controlHeight}px;
       `,
@@ -59,7 +66,7 @@ const useStyle = () => {
         border-radius: ${barRadius}px;
       `,
     };
-  }, [token]);
+  }, [token, prefixCls]);
 
   return { styles };
 };

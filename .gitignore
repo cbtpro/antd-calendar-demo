@@ -1,22 +1,22 @@
-# Dependencies
+# 依赖目录
 node_modules/
 
-# Build and test output
+# 构建与测试产物
 build/
 dist/
 coverage/
 *.tsbuildinfo
 .cache/
 
-# Local environment variables
+# 本地环境变量
 .env
 .env.*
 !.env.example
 
-# Logs
+# 日志
 *.log
 
-# Editor history and operating system files
+# 编辑器历史与操作系统文件
 .history/
 .DS_Store
 Thumbs.db

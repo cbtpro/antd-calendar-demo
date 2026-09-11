@@ -4,6 +4,55 @@
 
 按照步骤创建文件后即可运行。代码以本项目当前实现为基准，模拟数据是 2026 年 1 月的「订单后台 v2.3」迭代，不是真实业务记录。
 
+## 效果预览
+
+下图展示「订单后台 v2.3」在 2026 年 1 月的任务排期。颜色仅用于视觉上区分任务，不代表任务类型、状态或优先级。
+
+![开发任务日历演示：多任务重叠展示，跨日期片段按固定泳道对齐](../screenshot/screenshot-20260911-091403.png)
+
+可以重点观察 1 月 11 日：第一条泳道留空，订单列表任务和权限审计任务仍分别位于第二、第三条泳道。12 日新的异步导出任务进入第一条泳道，原有任务的位置保持不变。这正是后文泳道 `lane` 算法要实现的效果。
+
+## 示例来源与 antd 5 适配背景
+
+本教程参考了 Ant Design 6 官方 Calendar 的 [「跨日期事件」示例](https://ant-design.antgroup.com/components/calendar-cn#calendar-demo-event-range)。在 antd 6 文档中可以看到这一效果；对于仍然使用 antd 5 的内网项目，也可以沿用这种按日期绘制任务片段的思路，通过调整样式接入方式实现跨日期展示，无需仅为此功能升级到 antd 6。
+
+**本文面向 antd 5 的实现方案：保留日期单元格自定义渲染，将 v6 的内部语义样式入口替换为局部 CSS 选择器，再加入泳道 lane 算法解决重叠任务的跨天对齐。**
+
+### 官方示例思路如何用在 antd 5 中
+
+跨日期任务可以拆成多个日期单元格里的片段，根据真实起止日期分别绘制首段、中间段和末段，再通过样式把相邻片段连接起来。这一实现依赖自定义渲染与 CSS 布局，不要求 Calendar 提供一个独立的“跨日期事件”数据接口。
+
+版本之间需要适配的是样式入口。官方 Calendar API 标注：`cellRender` 从 5.4.0 开始提供，`styles`、`classNames` 从 6.0.0 开始提供，其中 `itemContent` 语义节点标注为 6.4.0。因此，迁移到 antd 5 时不能直接使用 `styles.itemContent` 或 `classNames.itemContent`。[版本依据](https://ant-design.antgroup.com/components/calendar-cn#api)
+
+| 实现环节 | 本文在 antd 5 中的处理 |
+| --- | --- |
+| 日期单元格渲染 | 使用 `cellRender`，要求 antd ≥ 5.4.0 |
+| 跨日期片段 | 保留 `start`、`middle`、`end`、`single` 的判断和样式 |
+| 内部内容区溢出 | 通过 Emotion 根节点样式中的嵌套选择器设置 `overflow: visible` |
+| 自定义类名前缀 | 使用 `getPrefixCls('picker', customizePrefixCls)`，与 Calendar 保持一致 |
+| 多任务跨天对齐 | 增加固定泳道 `lane`，用 CSS Grid 保留行位与空位 |
+| 业务复用 | 将数据、布局算法、样式和组件接口分别组织 |
+
+例如，在默认前缀下，本文覆盖的内容区是 `.ant-picker-calendar-date-content`。对应的核心样式为：
+
+```ts
+calendar: css`
+  &&& .${prefixCls}-calendar-date-content {
+    overflow: visible;
+  }
+`,
+```
+
+再通过 `<Calendar css={styles.calendar} cellRender={cellRender} />` 应用。Emotion 会生成根节点 className，嵌套选择器只作用于当前日历。完整实现见第 5、6 节。
+
+对基本跨日期效果而言，主要是调整样式接入方式；对于多个任务同时进行的业务场景，还需要处理固定行位。本文第 4 节详细介绍的**泳道 lane** 就负责这一部分：前面的任务结束后，后面的跨天任务仍留在原泳道，避免每天重新排列造成错位。
+
+### 教程目标与仓库验证版本
+
+本文组件采用面向 antd 5 的 API 和样式写法，但当前演示仓库的 `package.json` 仍声明 `antd: 6.6.3`，已有构建验证也在该版本下完成。文档中的依赖清单如实保留仓库配置，不表示已经将工程整体降级并验证过 antd 5。
+
+在公司已有 antd 5 项目中，可保留该项目现有的 React、构建工具与依赖版本，接入本文组件并按第 8 节验证；不需要照搬演示仓库的整份 `package.json`。内部 CSS 类名、间距和跨天条接缝仍需在实际使用的 antd 5 小版本中核对。
+
 ## 1. 明确目标与实现边界
 
 我们希望一条任务在起止日期之间每天出现，并在同一天与其他任务分行显示。同一条任务跨天时始终占据同一行；前面的任务结束后，空位仍然保留。
@@ -41,7 +90,7 @@ cd event-calendar-demo
 mkdir -p public src/components/EventCalendar
 ```
 
-下面提供当前项目的依赖声明。`antd` 固定为 `6.6.3`，本文使用该版本的 Calendar 语义样式接口。`@ant-design/icons` 和 `clsx` 是现有项目保留的依赖，本实现没有直接使用它们；也不需要 `antd-style`。
+下面提供当前项目的依赖声明。`antd` 固定为 `6.6.3`，组件样式不依赖 v6 的 `styles`/`classNames` 接口，使用 Emotion 嵌套选择器以兼容 Ant Design 5（`cellRender` 要求至少 5.4.0）。`@ant-design/icons` 和 `clsx` 是现有项目保留的依赖，本实现没有直接使用它们；也不需要 `antd-style`。
 
 创建 `package.json`：
 
@@ -179,13 +228,13 @@ import type { CalendarProps } from 'antd';
 import type { Dayjs } from 'dayjs';
 
 export interface CalendarEvent {
-  /** Unique within this calendar. */
+  /** 在当前日历中唯一的任务标识。 */
   key: string;
   title: string;
-  /** Both start and end dates are inclusive. */
+  /** 开始日期和结束日期都计入任务占用范围。 */
   start: Dayjs;
   end: Dayjs;
-  /** Defaults to the current theme's primary color. */
+  /** 默认使用当前主题的主色。 */
   color?: string;
 }
 
@@ -197,6 +246,8 @@ export interface EventRenderInfo {
 
 export type EventCalendarProps<T extends CalendarEvent = CalendarEvent> = Omit<
   CalendarProps<Dayjs>,
+  | 'styles'
+  | 'classNames'
   | 'cellRender'
   | 'fullCellRender'
   | 'dateCellRender'
@@ -205,22 +256,52 @@ export type EventCalendarProps<T extends CalendarEvent = CalendarEvent> = Omit<
   | 'monthFullCellRender'
 > & {
   events: readonly T[];
-  /** Customizes each daily segment's content while retaining its layout. */
+  /** 自定义任务在每天的片段内容，同时保留组件的布局。 */
   renderEvent?: (event: T, info: EventRenderInfo) => ReactNode;
 };
 ```
 
 泛型 `T extends CalendarEvent` 允许任务携带 `owner`、`priority` 等业务字段，并在自定义渲染函数里保持类型推断。`readonly T[]` 表示组件不会修改传入数组。
 
-## 4. 实现固定行位分配算法
+## 4. 核心概念：泳道 lane 与固定行位分配
 
-### 4.1 为什么每天 filter 后直接 map 会错位
+> **泳道 lane 是任务在时间轴上的固定纵向位置。先给整个任务分配泳道，再让它在每一天的片段使用同一个泳道，跨天才能对齐。**
+
+### 4.1 什么是泳道
+
+把日历展开为一张排期表：横轴是日期，纵轴是泳道。一条泳道是一条可以容纳任务的水平轨道，在每个日期单元格中对应相同编号的任务行。
+
+`lane = 0` 表示第一条泳道，`lane = 1` 表示第二条，依此类推。任务从开始到结束都占据自己的泳道；只要日期不重叠，不同任务就可以先后复用同一条泳道。
+
+这里的泳道是**布局坐标**：它不表示负责人、任务优先级、任务状态，也不表示日历里的第几周。日历换到下一周时，任务仍然位于日期内容区域内相同编号的任务行，并非停留在页面上相同的绝对 y 坐标。
+
+| 概念 | 表示什么 | 示例 |
+| --- | --- | --- |
+| `event.key` | 任务的唯一身份 | C 无论在哪一天都叫 C |
+| `event.lane` | 任务在本次布局中的泳道编号 | C 从 9 日到 13 日都在 lane 2 |
+| 当天数组的 `index` | 任务在当天过滤结果中的位置 | 其他任务结束后，C 的 index 可能变成 0 |
+| `gridRow` | CSS Grid 使用的行位置 | lane 2 对应 gridRow 3 |
+| `laneEnds[i]` | 分配过程中第 i 条泳道最后占用的日期 | laneEnds[0] 为 9 日，则 10 日可分配新任务 |
+
+业务方传入的任务不需要填写 `lane`，由 `assignEventLanes` 计算并附加到输出对象上。`renderEvent` 中的 `info.lane` 也来自这一计算结果。
+
+### 4.2 泳道必须遵守的三个规则
+
+1. **重叠隔离**：同一天仍在进行的两个任务必须使用不同泳道。
+2. **跨天固定**：一个任务的所有日期片段使用相同泳道，不能因为当天任务数量减少而上移。
+3. **结束后复用**：某条泳道上的任务结束后，后续任务可以复用它；首尾日期均计入占用，复用只能从结束日的下一天开始。
+
+“泳道空了”只意味着新任务可以占用该位置，不意味着应把其他泳道上的进行中任务搬过来。这样既能复用空间，也能保留跨天对齐关系。
+
+例如 A 在 lane 0 上于 9 日结束，C 在 lane 2 上持续到 13 日：10 日开始的新任务 D 可以放到 lane 0，但 C 仍留在 lane 2。
+
+### 4.3 为什么每天 filter 后直接 map 会错位
 
 假设 A 占 1 月 7–9 日，B 占 1 月 8–10 日。8 日过滤出的数组是 `[A, B]`，B 在第二行；10 日只剩 `[B]`，普通纵向列表会把 B 放到第一行。日期筛选没有错，缺少的是贯穿整个任务区间的行号。
 
 因此先在完整任务集合上分配行号，再筛选某天任务。筛选时保留行号，不按当天数组索引重新编号。
 
-### 4.2 排序和分配规则
+### 4.4 如何分配和复用泳道
 
 1. 按开始日期升序处理任务。
 2. 同一天开始的任务，结束更晚的排在前面。
@@ -252,7 +333,7 @@ export const assignEventLanes = <T extends EventRange>(events: readonly T[]) => 
   );
 
   return sortedEvents.map((event) => {
-    // End dates are inclusive: a lane can only be reused on a later day.
+    // 结束日仍被任务占用，泳道只能从结束日的下一天开始复用。
     const availableLane = laneEnds.findIndex((end) => end.isBefore(event.start, 'day'));
     const lane = availableLane === -1 ? laneEnds.length : availableLane;
     laneEnds[lane] = event.end;
@@ -262,7 +343,7 @@ export const assignEventLanes = <T extends EventRange>(events: readonly T[]) => 
 };
 ```
 
-### 4.3 逐步推演
+### 4.5 逐步推演：任务如何进入泳道
 
 使用四个任务说明分配过程：
 
@@ -273,7 +354,18 @@ export const assignEventLanes = <T extends EventRange>(events: readonly T[]) => 
 | C | 1 月 9 日 | 1 月 13 日 | A、B 均占用当天，新建 | 2 |
 | D | 1 月 10 日 | 1 月 10 日 | 第 0 行已于 9 日结束，复用 | 0 |
 
-最终按日期渲染：
+`laneEnds` 是分配算法的临时状态，随每次分配更新；任务对象上的 `lane` 则保留给后续渲染：
+
+| 处理完的任务 | laneEnds（日期均为 1 月） | 发生了什么 |
+| --- | --- | --- |
+| A | [9 日] | 新增 lane 0 |
+| B | [9 日, 10 日] | 新增 lane 1 |
+| C | [9 日, 10 日, 13 日] | 新增 lane 2；9 日仍被 A 占用 |
+| D | [10 日, 10 日, 13 日] | 复用 lane 0，并更新其结束日 |
+
+分配完成后，A 和 D 都带有 `lane: 0`，它们的日期区间没有重叠，因此不会在同一天争用位置。`laneEnds` 不需要传给 UI。
+
+最终按日期渲染，下面每一横行就是一条泳道：
 
 | 行位 | 1/7 | 1/8 | 1/9 | 1/10 | 1/11 | 1/12 | 1/13 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -283,13 +375,26 @@ export const assignEventLanes = <T extends EventRange>(events: readonly T[]) => 
 
 11 日只有 C，但它仍在第 3 行。前两行留空是对齐要求的一部分。
 
-### 4.4 为什么这个算法成立
+```text
+日期         1/10       1/11
+lane 0       [ D ]      [ 空 ]
+lane 1       [ B ]      [ 空 ]
+lane 2       [ C ] ───→ [ C ]   同一泳道，保持对齐
+```
+
+对照前面的[演示截图](#效果预览)，1 月 11 日第一条泳道留空、12 日被新任务复用，就是同一规则在实际开发任务中的体现。
+
+11 日筛选出的数组只有 `[C]`，所以 C 的数组下标是 0；但它的 `lane` 仍然是 2。渲染必须使用 `gridRow: C.lane + 1`，不能使用 `gridRow: index + 1`。
+
+这些空位由 Grid 的隐式行产生，不需要往任务数组里插入空任务。空位只占据布局空间，没有任务数据，也没有业务身份。
+
+### 4.6 为什么这个算法成立
 
 开始日期有序，所以每一行里已经放置的任务都不晚于当前任务开始。只有上一条任务已经在更早的日期结束时才复用该行，因此同一行内不会有日期重叠。
 
 任务分配一次 `lane` 后，渲染期间不再改变它，所以各日期上的片段能保持行号一致。当所有行都不可复用时，每行都有一个任务覆盖当前开始日，必须新增行才能避免重叠。由此，所需行数等于最大同时占用任务数；每天的视觉空位仍可能很多。
 
-### 4.5 复杂度与稳定性的范围
+### 4.7 复杂度与稳定性的范围
 
 设任务数为 n、使用行数为 L：排序为 O(n log n)，逐个扫描可用行为 O(nL)，总计 O(n log n + nL)，最坏为 O(n²)。存储排序结果、输出数组及行状态需要 O(n + L) 空间。
 
@@ -306,11 +411,13 @@ Emotion 的 `css` 返回序列化样式对象，不能当作 className 字符串
 创建 `src/components/EventCalendar/useStyle.ts`：
 
 ```ts
-import { useMemo } from 'react';
+import { useContext, useMemo } from 'react';
 import { css } from '@emotion/react';
-import { theme } from 'antd';
+import { ConfigProvider, theme } from 'antd';
 
-const useStyle = () => {
+const useStyle = (customizePrefixCls?: string) => {
+  const { getPrefixCls } = useContext(ConfigProvider.ConfigContext);
+  const prefixCls = getPrefixCls('picker', customizePrefixCls);
   const { token } = theme.useToken();
 
   const styles = useMemo(() => {
@@ -328,7 +435,12 @@ const useStyle = () => {
     } = token;
 
     return {
-      itemContent: { overflow: 'visible' as const },
+      calendar: css`
+        /* 仅作用于当前日历，覆盖 Ant Design 默认的溢出设置。 */
+        &&& .${prefixCls}-calendar-date-content {
+          overflow: visible;
+        }
+      `,
       cell: css`
         min-height: ${controlHeight}px;
       `,
@@ -367,7 +479,7 @@ const useStyle = () => {
         border-radius: ${barRadius}px;
       `,
     };
-  }, [token]);
+  }, [token, prefixCls]);
 
   return { styles };
 };
@@ -375,7 +487,7 @@ const useStyle = () => {
 export default useStyle;
 ```
 
-### 5.1 Grid 如何保留空行
+### 5.1 将逻辑泳道映射为 Grid 行
 
 关键是单列 Grid、统一的隐式行高，以及每个任务的显式行号：
 
@@ -384,6 +496,8 @@ export default useStyle;
   <span style={{ gridRow: event.lane + 1 }}>任务内容</span>
 </div>
 ```
+
+泳道算法决定“放在哪一行”，Grid 决定“这一行在页面上如何占据空间”，两者缺一不可：只计算 lane 却继续使用普通纵向列表，仍然会错位。
 
 CSS Grid 行号从 1 开始，算法从 0 开始，所以需要 `+ 1`。即使当天只有 `lane = 2` 的任务，Grid 也会为前两行保留固定高度和间距。`minmax(0, 1fr)` 允许列在长标题下收缩，配合省略号限制溢出。
 
@@ -396,7 +510,7 @@ CSS Grid 行号从 1 开始，算法从 0 开始，所以需要 `+ 1`。即使�
 | end | 右侧圆角，向左扩展 | 不显示 |
 | single | 两端圆角 | 显示 |
 
-负 margin 补偿日期单元格的内边距与间隔；`itemContent.overflow = visible` 允许片段越过单元格内容区域，产生连续任务条的视觉效果。该补偿与当前 Ant Design 全尺寸日历布局有关；修改单元格 padding、紧凑模式或主题尺寸后应重新检查接缝。
+负 margin 补偿日期单元格的内边距与间隔；对日历内部 `*-calendar-date-content` 设置 `overflow: visible` 允许片段越过单元格内容区域，产生连续任务条的视觉效果。该补偿与当前 Ant Design 全尺寸日历布局有关；修改单元格 padding、紧凑模式或主题尺寸后应重新检查接缝。
 
 算法保证的是行位。当前样式不在每周起点补画圆角或重复标题；跨周时仍依据任务真实起止日期判断片段。任务开始日在可视区外时，可能只看到没有文字的延续条，可悬停查看 `title`。
 
@@ -411,7 +525,7 @@ Calendar 的 `cellRender` 提供日期和单元格类型。我们只为日期单
 3. 判断片段位置，选择首段、末段或中间段样式。
 4. 使用预先分配的 `lane` 定位，按任务颜色或主题主色绘制。
 5. 若传入 `renderEvent`，由业务方生成片段内容。
-6. 合并语义样式，将其他 Calendar props 透传。
+6. 通过 Emotion 的 `css` 属性给 Calendar 根节点附加样式类，将其他 Calendar props 透传。
 
 创建 `src/components/EventCalendar/EventCalendar.tsx`：
 
@@ -439,11 +553,10 @@ const getRangePosition = (date: Dayjs, event: CalendarEvent): EventRenderInfo['p
 function EventCalendar<T extends CalendarEvent = CalendarEvent>({
   events,
   renderEvent,
-  styles: calendarStyles,
   ...calendarProps
 }: EventCalendarProps<T>) {
   const { token } = theme.useToken();
-  const { styles } = useStyle();
+  const { styles } = useStyle(calendarProps.prefixCls);
   const layoutEvents = useMemo(() => assignEventLanes(events), [events]);
 
   const cellRender = useCallback<NonNullable<CalendarProps<Dayjs>['cellRender']>>(
@@ -491,21 +604,15 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
     [layoutEvents, renderEvent, styles, token.colorPrimary],
   );
 
-  const mergedStyles: CalendarProps<Dayjs>['styles'] = (info) => {
-    const overrides = typeof calendarStyles === 'function' ? calendarStyles(info) : calendarStyles;
-    return {
-      ...overrides,
-      itemContent: { ...styles.itemContent, ...overrides?.itemContent },
-    };
-  };
-
-  return <Calendar {...calendarProps} styles={mergedStyles} cellRender={cellRender} />;
+  return <Calendar {...calendarProps} css={styles.calendar} cellRender={cellRender} />;
 }
 
 export default EventCalendar;
 ```
 
-`styles` 同时支持对象和函数，因此合并时先解析用户样式，再合并 `itemContent`。调用方的同名样式优先；覆盖 `overflow` 可能改变跨天条显示。
+Ant Design 5 没有 Calendar 的 `styles` 接口，因此使用 `css={styles.calendar}`。Emotion 将其转换为根节点的 className，嵌套选择器只影响当前日历。`&&&` 提高选择器优先级，以覆盖组件默认 overflow。通过 `ConfigProvider.ConfigContext.getPrefixCls` 获取与 Calendar 一致的前缀，也兼容全局或单组件自定义 prefixCls。可以继续用 `className` 引用业务 CSS，或用 `style` 设置根节点行内样式。
+
+此方案依据 [Ant Design 5 Calendar 源码](https://github.com/ant-design/ant-design/blob/5.29.3/components/calendar/generateCalendar.tsx) 的内部类名实现；升级组件库时应核对 DOM 类名。当前项目仍安装 antd 6，未改动内网项目的依赖。
 
 `useMemo` 的依赖是数组引用。更新任务时请创建新数组，例如 `setEvents(previous => [...previous, newEvent])`，不要原地 `push` 后仍传入同一个数组。
 
@@ -522,7 +629,7 @@ export type { CalendarEvent, EventCalendarProps, EventRenderInfo } from './types
 
 模拟任务围绕一次完整迭代展开：需求评审 → 前后端并行开发 → 联调 → 回归与压测 → 缺陷修复 → 验收和灰度观察。
 
-蓝色表示开发，绿色表示测试验收，红色表示修复，黄色表示评审、联调或发布观察。这些颜色只是本 demo 的约定，由业务数据提供，通用组件不识别具体任务类别。
+任务颜色仅用于辅助区分不同任务，可按需设置，没有业务含义。泳道分配和跨天对齐不依赖颜色。
 
 创建 `src/demo.tsx`：
 
@@ -823,7 +930,7 @@ export default function TeamSchedule({ events }: { events: readonly TeamEvent[] 
 | 尺寸样式无效 | CSS 模板字符串插入数字 token 时添加 px |
 | 跨天任务上移 | 检查是否按当天数组下标定位，应使用预分配 lane |
 | 同一天任务被放入同一行 | 复用条件必须为严格早于，不能小于等于 |
-| 条形之间出现间隙或被裁切 | 核对负 margin、主题尺寸和 itemContent 的 overflow |
+| 条形之间出现间隙或被裁切 | 核对负 margin、主题尺寸和 日期内容容器的 overflow |
 | 更新任务后不变化 | 不要原地修改数组；传入新的数组引用 |
 | 月份中间的延续任务不显示标题 | 当前仅真实起点显示标题，可通过 renderEvent 扩展 |
 | 任务太多时超出日期格 | 当前无折叠或“更多”入口；需要额外设计周行高度或汇总交互 |
@@ -836,25 +943,25 @@ export default function TeamSchedule({ events }: { events: readonly TeamEvent[] 
 创建 `.gitignore`：
 
 ```gitignore
-# Dependencies
+# 依赖目录
 node_modules/
 
-# Build and test output
+# 构建与测试产物
 build/
 dist/
 coverage/
 *.tsbuildinfo
 .cache/
 
-# Local environment variables
+# 本地环境变量
 .env
 .env.*
 !.env.example
 
-# Logs
+# 日志
 *.log
 
-# Editor history and operating system files
+# 编辑器历史与操作系统文件
 .history/
 .DS_Store
 Thumbs.db

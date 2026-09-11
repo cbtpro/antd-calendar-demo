@@ -21,17 +21,14 @@ const getRangePosition = (date: Dayjs, event: CalendarEvent): EventRenderInfo['p
 function EventCalendar<T extends CalendarEvent = CalendarEvent>({
   events,
   renderEvent,
-  styles: calendarStyles,
   ...calendarProps
 }: EventCalendarProps<T>) {
   const { token } = theme.useToken();
-  const { styles } = useStyle();
+  const { styles } = useStyle(calendarProps.prefixCls);
   const layoutEvents = useMemo(() => assignEventLanes(events), [events]);
 
-  const cellRender = useCallback<NonNullable<CalendarProps<Dayjs>['cellRender']>>(
-    (date, info) => {
-      if (info.type !== 'date') return null;
-
+  const dateCellRender = useCallback<NonNullable<CalendarProps<Dayjs>['dateCellRender']>>(
+    (date) => {
       const currentEvents = layoutEvents.filter(
         (event) => !date.isBefore(event.start, 'day') && !date.isAfter(event.end, 'day'),
       );
@@ -73,16 +70,7 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
     [layoutEvents, renderEvent, styles, token.colorPrimary],
   );
 
-  const mergedStyles: CalendarProps<Dayjs>['styles'] = (info) => {
-    debugger;
-    const overrides = typeof calendarStyles === 'function' ? calendarStyles(info) : calendarStyles;
-    return {
-      ...overrides,
-      itemContent: { ...styles.itemContent, ...overrides?.itemContent },
-    };
-  };
-
-  return <Calendar {...calendarProps} styles={mergedStyles} cellRender={cellRender} />;
+  return <Calendar {...calendarProps} css={styles.calendar} dateCellRender={dateCellRender} />;
 }
 
 export default EventCalendar;
