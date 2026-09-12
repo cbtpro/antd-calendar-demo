@@ -1,2 +1,2 @@
 export { default } from './EventCalendar';
-export type { CalendarEvent, EventCalendarProps, EventRenderInfo } from './types';
+export type { CalendarDateMark, CalendarEvent, EventCalendarProps, EventRenderInfo } from './types';

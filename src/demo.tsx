@@ -4,7 +4,17 @@ import { Descriptions, Modal, theme } from 'antd';
 import dayjs from 'dayjs';
 
 import EventCalendar from './components/EventCalendar';
-import type { CalendarEvent } from './components/EventCalendar';
+import type { CalendarDateMark, CalendarEvent } from './components/EventCalendar';
+
+// 元旦放假与补班依据 2026 年放假安排，请假记录为演示数据。
+const dateMarks: CalendarDateMark[] = [
+  { date: dayjs('2026-01-01'), type: 'holiday', label: '元旦放假' },
+  { date: dayjs('2026-01-02'), type: 'holiday', label: '元旦放假调休' },
+  { date: dayjs('2026-01-03'), type: 'holiday', label: '元旦放假' },
+  { date: dayjs('2026-01-04'), type: 'workday', label: '元旦补班' },
+  { date: dayjs('2026-01-14'), type: 'leave', label: '请假（模拟）' },
+  { date: dayjs('2026-01-15'), type: 'leave', label: '请假（模拟）' },
+];
 
 // 模拟订单后台 v2.3 迭代：开发、联调、测试、缺陷修复与灰度发布。
 const getEvents = (token: ReturnType<typeof theme.useToken>['token']): CalendarEvent[] => [
@@ -46,8 +56,8 @@ const getEvents = (token: ReturnType<typeof theme.useToken>['token']): CalendarE
   {
     key: 'export-worker',
     title: '后端：异步导出队列与文件下载',
-    start: dayjs('2026-01-12'),
-    end: dayjs('2026-01-16'),
+    start: dayjs('2026-01-11'),
+    end: dayjs('2026-01-17'),
     color: token.colorPrimary,
   },
   {
@@ -124,6 +134,7 @@ const App: React.FC = () => {
     <>
       <EventCalendar
         events={events}
+        dateMarks={dateMarks}
         defaultValue={dayjs('2026-01-01')}
         onEventClick={(event) => setSelectedEvent(event)}
       />

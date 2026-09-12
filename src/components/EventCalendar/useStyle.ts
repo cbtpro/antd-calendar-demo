@@ -28,6 +28,45 @@ const useStyle = (customizePrefixCls?: string) => {
           overflow: visible;
         }
       `,
+      date: css`
+        position: relative;
+        isolation: isolate;
+      `,
+      holiday: css`
+        &::after {
+          content: '';
+          position: absolute;
+          z-index: -1;
+          inset: 0;
+          background: ${token.colorError};
+          opacity: 0.08;
+          pointer-events: none;
+        }
+      `,
+      dateHeader: css`
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: ${marginXXS}px;
+      `,
+      redDate: css`
+        && { color: ${token.colorError}; }
+      `,
+      badge: css`
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 18px;
+        height: 18px;
+        border-radius: 3px;
+        color: #fff;
+        font-size: 12px;
+        line-height: 1;
+        background: #757575;
+      `,
+      holidayBadge: css`
+        background: ${token.colorError};
+      `,
       cell: css`
         min-height: ${controlHeight}px;
       `,
@@ -46,6 +85,24 @@ const useStyle = (customizePrefixCls?: string) => {
         font-size: ${fontSizeSM}px;
         white-space: nowrap;
         text-overflow: ellipsis;
+      `,
+      nonWorkingBar: css`
+        /* 边框计入片段尺寸，中间片段不画左右边框，保持跨天连接。 */
+        box-sizing: border-box;
+        border: 1px dashed rgba(128, 128, 128, 0.5);
+        border-inline-width: 0;
+        background-color: rgba(128, 128, 128, 0.3);
+        color: ${token.colorText};
+
+        &[data-range-position='start'],
+        &[data-range-position='single'] {
+          border-inline-start-width: 1px;
+        }
+
+        &[data-range-position='end'],
+        &[data-range-position='single'] {
+          border-inline-end-width: 1px;
+        }
       `,
       barStart: css`
         margin-inline-end: calc(-1 * (${paddingXS}px + ${marginXS}px / 2));
@@ -68,7 +125,7 @@ const useStyle = (customizePrefixCls?: string) => {
     };
   }, [token, prefixCls]);
 
-  return { styles };
+  return { styles, prefixCls };
 };
 
 export default useStyle;

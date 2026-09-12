@@ -96,3 +96,24 @@ function TeamSchedule({ events }: { events: TeamEvent[] }) {
 ```
 
 业务页面通过状态管理详情弹窗，完整示例见 `src/demo.tsx`。组件仅处理任务事件冒泡并调用回调，保留 Calendar 对空白日期区域的选择逻辑。自定义任务内容中的独立交互可自行阻止冒泡。
+
+## 日期标记
+
+```tsx
+<EventCalendar
+  events={events}
+  dateMarks={[
+    { date: dayjs('2026-01-01'), type: 'holiday', label: '元旦' },
+    { date: dayjs('2026-01-04'), type: 'workday', label: '补班' },
+    { date: dayjs('2026-01-14'), type: 'leave', label: '请假（模拟）' },
+  ]}
+/>
+```
+
+`CalendarDateMark` 类型从组件入口导出。节假日显示红字、红色透明背景及红底白字“休”；补班显示灰底白字“班”；请假显示灰底白字“请”。周末自动显示红色日期，补班优先覆盖周末和节假日样式，请假可以与其他标记并列。标记不占泳道，也不改变日期选择逻辑；不传 `dateMarks` 时仍自动标记周末。
+
+## 非工作日任务片段
+
+节假日、周末、请假日上的任务以半透明灰色背景和半透明灰色虚线边框显示，表示当天不计工作量。补班恢复任务原色；若补班日同时请假，仍按请假显示灰色。片段保持原泳道、尺寸、连接和点击行为，保证任务连续可见。
+
+`renderEvent`、`onEventClick` 回调的 `info.isWorkingDay` 表示当前片段是否计入工作量。此标记不改变任务日期或详情中的自然日持续天数；当前请假标记作用于该日所有任务。

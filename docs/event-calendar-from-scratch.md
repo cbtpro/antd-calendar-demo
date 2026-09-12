@@ -238,7 +238,17 @@ export interface CalendarEvent {
   color?: string;
 }
 
+/** 日期标记由业务方提供，周末由组件自动识别。 */
+export interface CalendarDateMark {
+  date: Dayjs;
+  type: 'holiday' | 'workday' | 'leave';
+  /** 悬停和无障碍说明，例如元旦、补班、年假。 */
+  label?: string;
+}
+
 export interface EventRenderInfo {
+  /** 当前片段是否为计入工作量的日期，供自定义渲染和点击回调使用。 */
+  isWorkingDay: boolean;
   date: Dayjs;
   lane: number;
   position: 'start' | 'middle' | 'end' | 'single';
@@ -256,6 +266,8 @@ export type EventCalendarProps<T extends CalendarEvent = CalendarEvent> = Omit<
   | 'monthFullCellRender'
 > & {
   events: readonly T[];
+  /** 可同时标记调休安排和请假；补班优先于节假日、周末样式。 */
+  dateMarks?: readonly CalendarDateMark[];
   /** 自定义任务在每天的片段内容，同时保留组件的布局。 */
   renderEvent?: (event: T, info: EventRenderInfo) => ReactNode;
   /** 点击任务片段时触发，由业务方展示详情；不会触发日期选择。 */
@@ -443,6 +455,45 @@ const useStyle = (customizePrefixCls?: string) => {
           overflow: visible;
         }
       `,
+      date: css`
+        position: relative;
+        isolation: isolate;
+      `,
+      holiday: css`
+        &::after {
+          content: '';
+          position: absolute;
+          z-index: -1;
+          inset: 0;
+          background: ${token.colorError};
+          opacity: 0.08;
+          pointer-events: none;
+        }
+      `,
+      dateHeader: css`
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: ${marginXXS}px;
+      `,
+      redDate: css`
+        && { color: ${token.colorError}; }
+      `,
+      badge: css`
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 18px;
+        height: 18px;
+        border-radius: 3px;
+        color: #fff;
+        font-size: 12px;
+        line-height: 1;
+        background: #757575;
+      `,
+      holidayBadge: css`
+        background: ${token.colorError};
+      `,
       cell: css`
         min-height: ${controlHeight}px;
       `,
@@ -461,6 +512,24 @@ const useStyle = (customizePrefixCls?: string) => {
         font-size: ${fontSizeSM}px;
         white-space: nowrap;
         text-overflow: ellipsis;
+      `,
+      nonWorkingBar: css`
+        /* 边框计入片段尺寸，中间片段不画左右边框，保持跨天连接。 */
+        box-sizing: border-box;
+        border: 1px dashed rgba(128, 128, 128, 0.5);
+        border-inline-width: 0;
+        background-color: rgba(128, 128, 128, 0.3);
+        color: ${token.colorText};
+
+        &[data-range-position='start'],
+        &[data-range-position='single'] {
+          border-inline-start-width: 1px;
+        }
+
+        &[data-range-position='end'],
+        &[data-range-position='single'] {
+          border-inline-end-width: 1px;
+        }
       `,
       barStart: css`
         margin-inline-end: calc(-1 * (${paddingXS}px + ${marginXS}px / 2));
@@ -483,7 +552,7 @@ const useStyle = (customizePrefixCls?: string) => {
     };
   }, [token, prefixCls]);
 
-  return { styles };
+  return { styles, prefixCls };
 };
 
 export default useStyle;
@@ -536,11 +605,12 @@ CSS Grid 行号从 1 开始，算法从 0 开始，所以需要 `+ 1`。即使�
 import { useCallback, useMemo } from 'react';
 import { Calendar, theme } from 'antd';
 import type { CalendarProps } from 'antd';
+import dayjs from 'dayjs';
 import type { Dayjs } from 'dayjs';
 
 import { assignEventLanes } from './eventLayout';
 import useStyle from './useStyle';
-import type { CalendarEvent, EventCalendarProps, EventRenderInfo } from './types';
+import type { CalendarDateMark, CalendarEvent, EventCalendarProps, EventRenderInfo } from './types';
 
 const getRangePosition = (date: Dayjs, event: CalendarEvent): EventRenderInfo['position'] => {
   const starts = date.isSame(event.start, 'day');
@@ -556,14 +626,31 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
   events,
   renderEvent,
   onEventClick,
+  dateMarks,
   ...calendarProps
 }: EventCalendarProps<T>) {
   const { token } = theme.useToken();
-  const { styles } = useStyle(calendarProps.prefixCls);
+  const { styles, prefixCls } = useStyle(calendarProps.prefixCls);
   const layoutEvents = useMemo(() => assignEventLanes(events), [events]);
+
+  const marksByDate = useMemo(() => {
+    const result = new Map<string, CalendarDateMark[]>();
+    for (const mark of dateMarks ?? []) {
+      const key = mark.date.format('YYYY-MM-DD');
+      result.set(key, [...(result.get(key) ?? []), mark]);
+    }
+    return result;
+  }, [dateMarks]);
 
   const dateCellRender = useCallback<NonNullable<CalendarProps<Dayjs>['dateCellRender']>>(
     (date) => {
+      const marks = marksByDate.get(date.format('YYYY-MM-DD')) ?? [];
+      const isLeave = marks.some((mark) => mark.type === 'leave');
+      const isWorkday = marks.some((mark) => mark.type === 'workday');
+      const isHoliday = marks.some((mark) => mark.type === 'holiday');
+      const isWeekend = date.day() === 0 || date.day() === 6;
+      // 请假不计工作量；补班覆盖节假日和周末，但不覆盖个人请假。
+      const isWorkingDay = !isLeave && (isWorkday || (!isHoliday && !isWeekend));
       const currentEvents = layoutEvents.filter(
         (event) => !date.isBefore(event.start, 'day') && !date.isAfter(event.end, 'day'),
       );
@@ -583,15 +670,17 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
               return (
                 <span
                   key={event.key}
-                  css={[styles.bar, rangeStyle]}
+                  css={[styles.bar, rangeStyle, !isWorkingDay && styles.nonWorkingBar]}
+                  data-working-day={isWorkingDay}
+                  data-range-position={position}
                   title={event.title}
                   role={onEventClick ? 'button' : undefined}
                   tabIndex={onEventClick ? 0 : undefined}
-                  aria-label={event.title}
+                  aria-label={isWorkingDay ? event.title : `${event.title}（当天不计工作量）`}
                   onClick={(clickEvent) => {
                     // 任务交互不向日期单元格冒泡，保留日历自身的日期选择逻辑。
                     clickEvent.stopPropagation();
-                    onEventClick?.(event, { date, lane: event.lane, position });
+                    onEventClick?.(event, { date, lane: event.lane, position, isWorkingDay });
                   }}
                   onKeyDown={(keyEvent) => {
                     // 避免日历响应任务上的键盘操作；自定义内容自行处理内部交互。
@@ -603,18 +692,18 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
                     ) {
                       keyEvent.preventDefault();
                       if (!keyEvent.repeat) {
-                        onEventClick(event, { date, lane: event.lane, position });
+                        onEventClick(event, { date, lane: event.lane, position, isWorkingDay });
                       }
                     }
                   }}
                   style={{
                     cursor: onEventClick ? 'pointer' : undefined,
-                    backgroundColor: event.color ?? token.colorPrimary,
+                    backgroundColor: isWorkingDay ? event.color ?? token.colorPrimary : undefined,
                     gridRow: event.lane + 1,
                   }}
                 >
                   {renderEvent
-                    ? renderEvent(event, { date, lane: event.lane, position })
+                    ? renderEvent(event, { date, lane: event.lane, position, isWorkingDay })
                     : position === 'start' || position === 'single'
                       ? event.title
                       : null}
@@ -625,10 +714,51 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
         </div>
       );
     },
-    [layoutEvents, renderEvent, onEventClick, styles, token.colorPrimary],
+    [layoutEvents, marksByDate, renderEvent, onEventClick, styles, token.colorPrimary],
   );
 
-  return <Calendar {...calendarProps} css={styles.calendar} dateCellRender={dateCellRender} />;
+  const dateFullCellRender = useCallback<NonNullable<CalendarProps<Dayjs>['dateFullCellRender']>>(
+    (date) => {
+      const marks = marksByDate.get(date.format('YYYY-MM-DD')) ?? [];
+      const workday = marks.find((mark) => mark.type === 'workday');
+      const holiday = !workday && marks.find((mark) => mark.type === 'holiday');
+      const leave = marks.find((mark) => mark.type === 'leave');
+      const isWeekend = date.day() === 0 || date.day() === 6;
+      const calendarPrefix = `${prefixCls}-calendar`;
+
+      // 保留日期内部结构和今天标记，选择、禁用及切月仍由 Calendar 处理。
+      return (
+        <div
+          className={[
+            `${prefixCls}-cell-inner`,
+            `${calendarPrefix}-date`,
+            date.isSame(dayjs(), 'day') ? `${calendarPrefix}-date-today` : '',
+          ].filter(Boolean).join(' ')}
+          css={[styles.date, holiday && styles.holiday]}
+          data-holiday={holiday ? 'true' : undefined}
+        >
+          <div className={`${calendarPrefix}-date-value`} css={styles.dateHeader}>
+            <span css={!workday && (holiday || isWeekend) ? styles.redDate : undefined}>
+              {String(date.date()).padStart(2, '0')}
+            </span>
+            {holiday && (
+              <span css={[styles.badge, styles.holidayBadge]} title={holiday.label ?? '节假日'} aria-label={holiday.label ?? '节假日'}>休</span>
+            )}
+            {workday && (
+              <span css={styles.badge} title={workday.label ?? '补班'} aria-label={workday.label ?? '补班'}>班</span>
+            )}
+            {leave && (
+              <span css={styles.badge} title={leave.label ?? '请假'} aria-label={leave.label ?? '请假'}>请</span>
+            )}
+          </div>
+          <div className={`${calendarPrefix}-date-content`}>{dateCellRender(date)}</div>
+        </div>
+      );
+    },
+    [marksByDate, prefixCls, styles, dateCellRender],
+  );
+
+  return <Calendar {...calendarProps} css={styles.calendar} dateFullCellRender={dateFullCellRender} />;
 }
 
 export default EventCalendar;
@@ -646,7 +776,7 @@ Ant Design 5 没有 Calendar 的 `styles` 接口，因此使用 `css={styles.cal
 
 ```ts
 export { default } from './EventCalendar';
-export type { CalendarEvent, EventCalendarProps, EventRenderInfo } from './types';
+export type { CalendarDateMark, CalendarEvent, EventCalendarProps, EventRenderInfo } from './types';
 ```
 
 ## 7. 接入真实风格的模拟任务
@@ -664,7 +794,17 @@ import { Descriptions, Modal, theme } from 'antd';
 import dayjs from 'dayjs';
 
 import EventCalendar from './components/EventCalendar';
-import type { CalendarEvent } from './components/EventCalendar';
+import type { CalendarDateMark, CalendarEvent } from './components/EventCalendar';
+
+// 元旦放假与补班依据 2026 年放假安排，请假记录为演示数据。
+const dateMarks: CalendarDateMark[] = [
+  { date: dayjs('2026-01-01'), type: 'holiday', label: '元旦放假' },
+  { date: dayjs('2026-01-02'), type: 'holiday', label: '元旦放假调休' },
+  { date: dayjs('2026-01-03'), type: 'holiday', label: '元旦放假' },
+  { date: dayjs('2026-01-04'), type: 'workday', label: '元旦补班' },
+  { date: dayjs('2026-01-14'), type: 'leave', label: '请假（模拟）' },
+  { date: dayjs('2026-01-15'), type: 'leave', label: '请假（模拟）' },
+];
 
 // 模拟订单后台 v2.3 迭代：开发、联调、测试、缺陷修复与灰度发布。
 const getEvents = (token: ReturnType<typeof theme.useToken>['token']): CalendarEvent[] => [
@@ -784,6 +924,7 @@ const App: React.FC = () => {
     <>
       <EventCalendar
         events={events}
+        dateMarks={dateMarks}
         defaultValue={dayjs('2026-01-01')}
         onEventClick={(event) => setSelectedEvent(event)}
       />
@@ -874,6 +1015,33 @@ demo 用 `selectedEvent` 保存点击的任务，并通过声明式 `Modal` 显�
 `@supports` 保证只有支持该属性的浏览器才取消宽度补偿；旧浏览器继续使用弹窗原有补偿。浮层滚动条不占布局宽度，此属性不会为它额外留空。接入其他项目时应结合其滚动容器及弹窗库的补偿方式调整。
 
 验收时分别在页面有、无纵向滚动条的情况下反复打开与关闭详情，检查日历左右边缘不移动，弹窗打开期间背景不可滚动，关闭后恢复原滚动位置。
+
+### 7.3 标记节假日、补班、周末和请假
+
+通过 `dateMarks` 传入日期标记，每条包含 Dayjs 类型的 `date`、`type` 和可选的 `label`；周末通过 `date.day()` 自动识别，不必手动传入。
+
+| 标记 | type | 展示 |
+| --- | --- | --- |
+| 节假日及放假调休 | holiday | 日期红字、红色半透明背景，右上角红底白字“休” |
+| 补班 | workday | 右上角灰底白字“班”，日期沿用普通工作日样式 |
+| 周末 | 自动识别 | 日期红字，无额外背景和徽章 |
+| 请假 | leave | 右上角灰底白字“请”，不改变原有日期配色 |
+
+同一天补班优先于节假日和周末，避免补班日仍显示为休息日；请假独立显示，可以与“休”或“班”并列。同类型标记重复时使用第一条，业务方应保证数据一致。
+
+为了同时绘制日期数字与徽章，组件通过 antd 5.0.2 的 `dateFullCellRender` 保留原有日期内部类名、日期内容容器和今天标记。任务内容仍调用原先的 `dateCellRender` 函数；任务泳道和点击隔离逻辑不变，日期选择、禁用状态和切月仍交给 Calendar。
+
+日期标记不会生成任务、占用泳道或自动禁用日期；若要禁止某些日期选择，请使用 `disabledDate`。徽章的 `label` 用于悬停说明和无障碍名称。
+
+示例中的 1 月 1–3 日放假、1 月 4 日补班依据 [2026 年放假安排](https://www.beijing.gov.cn/so/topics/1100000088/holiday.html)，这里的 holiday 表示放假区间，包含调休日期，不将整个区间都定义为法定节日当天。1 月 14–15 日请假是模拟数据。组件不内置全年节假日表，应由业务接口提供所需月份的日期标记。
+
+### 7.4 非工作日的任务连续展示
+
+节假日、周末和请假日上的任务片段显示为半透明灰色，并带有半透明灰色虚线边框，表示当天不计工作量；普通工作日和补班日使用任务原色。个人请假优先级最高，因此补班日若同时请假，仍显示灰色。
+
+虚线边框使用 `box-sizing: border-box`，不增加片段高度；中间片段只绘制上下边框，任务起止处才补上相应侧边框，避免在相邻日期间产生竖向分隔。组件只调整片段的颜色和边框，不删除片段、不重算泳道、不改变首尾圆角和跨单元格连接。任务经过休息日仍连续可见，并保留详情点击功能。
+
+`renderEvent` 和 `onEventClick` 的 `info.isWorkingDay` 提供当前片段是否计入工作量的标记。这是日期级展示信息，不会自动调整任务起止日期，也不会将详情中的“持续天数”（自然日）改为工作日统计。请假标记当前作用于整个日历当天的所有任务。
 
 ## 8. 启动和验收
 
