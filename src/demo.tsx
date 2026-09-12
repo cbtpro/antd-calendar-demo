@@ -1,139 +1,46 @@
 import React from 'react';
 
-import { Descriptions, Modal, theme } from 'antd';
+import { Alert, Button, Descriptions, Modal, Space } from 'antd';
 import dayjs from 'dayjs';
 
 import EventCalendar from './components/EventCalendar';
-import type { CalendarDateMark, CalendarEvent } from './components/EventCalendar';
-
-// 元旦放假与补班依据 2026 年放假安排，请假记录为演示数据。
-const dateMarks: CalendarDateMark[] = [
-  { date: dayjs('2026-01-01'), type: 'holiday', label: '元旦放假' },
-  { date: dayjs('2026-01-02'), type: 'holiday', label: '元旦放假调休' },
-  { date: dayjs('2026-01-03'), type: 'holiday', label: '元旦放假' },
-  { date: dayjs('2026-01-04'), type: 'workday', label: '元旦补班' },
-  { date: dayjs('2026-01-14'), type: 'leave', label: '请假（模拟）' },
-  { date: dayjs('2026-01-15'), type: 'leave', label: '请假（模拟）' },
-];
-
-// 模拟订单后台 v2.3 迭代：开发、联调、测试、缺陷修复与灰度发布。
-const getEvents = (token: ReturnType<typeof theme.useToken>['token']): CalendarEvent[] => [
-  {
-    key: 'scope-review',
-    title: '订单后台 v2.3 需求与接口评审',
-    start: dayjs('2026-01-05'),
-    end: dayjs('2026-01-05'),
-    color: token.colorWarning,
-  },
-  {
-    key: 'order-query-api',
-    title: '后端：订单组合筛选与分页接口',
-    start: dayjs('2026-01-06'),
-    end: dayjs('2026-01-09'),
-    color: token.colorPrimary,
-  },
-  {
-    key: 'order-filter-ui',
-    title: '前端：订单筛选栏与 URL 状态同步',
-    start: dayjs('2026-01-06'),
-    end: dayjs('2026-01-08'),
-    color: token.colorPrimary,
-  },
-  {
-    key: 'order-table-ui',
-    title: '前端：订单列表、排序与详情抽屉',
-    start: dayjs('2026-01-09'),
-    end: dayjs('2026-01-14'),
-    color: token.colorPrimary,
-  },
-  {
-    key: 'permission-api',
-    title: '后端：订单导出权限与操作审计',
-    start: dayjs('2026-01-08'),
-    end: dayjs('2026-01-13'),
-    color: token.colorPrimary,
-  },
-  {
-    key: 'export-worker',
-    title: '后端：异步导出队列与文件下载',
-    start: dayjs('2026-01-11'),
-    end: dayjs('2026-01-17'),
-    color: token.colorPrimary,
-  },
-  {
-    key: 'order-integration',
-    title: '联调：筛选参数、分页与异常提示',
-    start: dayjs('2026-01-15'),
-    end: dayjs('2026-01-16'),
-    color: token.colorWarning,
-  },
-  {
-    key: 'export-ui',
-    title: '前端：导出进度轮询与失败重试',
-    start: dayjs('2026-01-15'),
-    end: dayjs('2026-01-20'),
-    color: token.colorPrimary,
-  },
-  {
-    key: 'order-regression',
-    title: '测试：订单查询与角色权限回归',
-    start: dayjs('2026-01-19'),
-    end: dayjs('2026-01-22'),
-    color: token.colorSuccess,
-  },
-  {
-    key: 'pagination-fix',
-    title: '修复：切换筛选条件后页码未重置',
-    start: dayjs('2026-01-20'),
-    end: dayjs('2026-01-20'),
-    color: token.colorError,
-  },
-  {
-    key: 'export-load-test',
-    title: '测试：十万条订单导出压测',
-    start: dayjs('2026-01-21'),
-    end: dayjs('2026-01-23'),
-    color: token.colorSuccess,
-  },
-  {
-    key: 'export-memory-fix',
-    title: '修复：大批量导出内存峰值过高',
-    start: dayjs('2026-01-23'),
-    end: dayjs('2026-01-27'),
-    color: token.colorError,
-  },
-  {
-    key: 'release-acceptance',
-    title: '验收：导出修复复测与发布检查',
-    start: dayjs('2026-01-28'),
-    end: dayjs('2026-01-29'),
-    color: token.colorSuccess,
-  },
-  {
-    key: 'production-release',
-    title: '发布：订单后台 v2.3 灰度上线',
-    start: dayjs('2026-01-30'),
-    end: dayjs('2026-01-30'),
-    color: token.colorWarning,
-  },
-  {
-    key: 'release-observation',
-    title: '观察：灰度错误率与导出队列积压',
-    start: dayjs('2026-01-30'),
-    end: dayjs('2026-02-03'),
-    color: token.colorWarning,
-  },
-];
+import type { CalendarEvent } from './components/EventCalendar';
+import useCalendarData from './useCalendarData';
+import { calendarStorage } from './data/calendarStorage';
 
 const App: React.FC = () => {
-  const { token } = theme.useToken();
-  const events = React.useMemo(() => getEvents(token), [token]);
+  const { events, dateMarks, error } = useCalendarData();
+  const [editable, setEditable] = React.useState(false);
+  const [saveError, setSaveError] = React.useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = React.useState<CalendarEvent | null>(null);
+
+  const saveEventRange = (event: CalendarEvent, range: { start: dayjs.Dayjs; end: dayjs.Dayjs }) => {
+    try {
+      calendarStorage.events.update(event.key, {
+        start: range.start.format('YYYY-MM-DD'),
+        end: range.end.format('YYYY-MM-DD'),
+      });
+      setSaveError(null);
+    } catch (cause) {
+      setSaveError(cause instanceof Error ? cause.message : '无法保存日期');
+    }
+  };
 
   return (
     <>
+      <Space style={{ marginBottom: 16 }}>
+        <Button type={editable ? 'primary' : 'default'} onClick={() => setEditable((value) => !value)} aria-pressed={editable}>
+          {editable ? '退出编辑模式' : '开启编辑模式'}
+        </Button>
+        {editable && <span>拖动任务主体可整体移动；拖动两端 ↔ 可调整起止日期</span>}
+      </Space>
+      {saveError && <Alert type="error" showIcon message="任务日期保存失败" description={saveError} />}
+      {error && <Alert type="error" showIcon message="日历数据读取失败" description={error} />}
       <EventCalendar
         events={events}
+        editable={editable}
+        onEventResize={saveEventRange}
+        onEventMove={saveEventRange}
         dateMarks={dateMarks}
         defaultValue={dayjs('2026-01-01')}
         onEventClick={(event) => setSelectedEvent(event)}

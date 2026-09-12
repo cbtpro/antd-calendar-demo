@@ -5,6 +5,8 @@
 - [从零到一开发教程](docs/event-calendar-from-scratch.md)：工程搭建、完整源码、布局算法推演、组件封装与验证。
 - [组件使用说明](src/components/EventCalendar/README.md)：数据接口、自定义渲染和业务字段扩展。
 
+- [本地存储接口](src/data/README.md)：首次初始化、任务与日期标记的增删改查。
+
 ## 运行
 
 ```bash

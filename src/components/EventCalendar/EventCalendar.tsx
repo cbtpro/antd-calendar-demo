@@ -1,10 +1,11 @@
 /** @jsxImportSource @emotion/react */
-import { useCallback, useMemo } from 'react';
-import { Calendar, theme } from 'antd';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Calendar, Tooltip, theme } from 'antd';
 import type { CalendarProps } from 'antd';
 import dayjs from 'dayjs';
 import type { Dayjs } from 'dayjs';
 
+import { countWorkingDays, isWorkingDate, moveEventRange } from './workday';
 import { assignEventLanes } from './eventLayout';
 import useStyle from './useStyle';
 import type { CalendarDateMark, CalendarEvent, EventCalendarProps, EventRenderInfo } from './types';
@@ -24,8 +25,20 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
   renderEvent,
   onEventClick,
   dateMarks,
+  editable = false,
+  onEventResize,
+  onEventMove,
   ...calendarProps
 }: EventCalendarProps<T>) {
+  const [dragging, setDragging] = useState<{ event: T; edge: 'start' | 'end' | 'move' } | null>(null);
+  const [dropDate, setDropDate] = useState<string | null>(null);
+  const suppressClick = useRef(false);
+  useEffect(() => {
+    if (!editable) {
+      setDragging(null);
+      setDropDate(null);
+    }
+  }, [editable]);
   const { token } = theme.useToken();
   const { styles, prefixCls } = useStyle(calendarProps.prefixCls);
   const layoutEvents = useMemo(() => assignEventLanes(events), [events]);
@@ -39,15 +52,42 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
     return result;
   }, [dateMarks]);
 
+  const isWorking = useCallback((date: Dayjs) =>
+    isWorkingDate(date, marksByDate.get(date.format('YYYY-MM-DD')) ?? []), [marksByDate]);
+  // 每条任务只计算一次提示内容，避免为每天的片段重复统计工期。
+  const eventTitles = useMemo(() => new Map(events.map((event) => [
+    event.key,
+    [
+      event.title,
+      `日期：${event.start.format('YYYY-MM-DD')} 至 ${event.end.format('YYYY-MM-DD')}`,
+      `任务时长：${event.end.startOf('day').diff(event.start.startOf('day'), 'day') + 1} 个自然日`,
+      `有效工期：${countWorkingDays(event, isWorking)} 个工作日`,
+    ].join('\n'),
+  ])), [events, isWorking]);
+  const resizeRange = useCallback((date: Dayjs) => {
+    if (!editable || !dragging) return null;
+    let range: { start: Dayjs; end: Dayjs } | null;
+    if (dragging.edge === 'move') {
+      if (!onEventMove) return null;
+      range = moveEventRange(dragging.event, date, isWorking);
+    } else {
+      if (!onEventResize) return null;
+      range = {
+        start: dragging.edge === 'start' ? date : dragging.event.start,
+        end: dragging.edge === 'end' ? date : dragging.event.end,
+      };
+    }
+    if (!range || range.start.isAfter(range.end, 'day')) return null;
+    const targets = dragging.edge === 'move' ? [range.start, range.end] : [date];
+    const validRange = calendarProps.validRange;
+    if (targets.some((target) => calendarProps.disabledDate?.(target) ||
+      (validRange && (target.isBefore(validRange[0], 'day') || target.isAfter(validRange[1], 'day'))))) return null;
+    return range;
+  }, [editable, dragging, onEventResize, onEventMove, isWorking, calendarProps.disabledDate, calendarProps.validRange]);
+
   const dateCellRender = useCallback<NonNullable<CalendarProps<Dayjs>['dateCellRender']>>(
     (date) => {
-      const marks = marksByDate.get(date.format('YYYY-MM-DD')) ?? [];
-      const isLeave = marks.some((mark) => mark.type === 'leave');
-      const isWorkday = marks.some((mark) => mark.type === 'workday');
-      const isHoliday = marks.some((mark) => mark.type === 'holiday');
-      const isWeekend = date.day() === 0 || date.day() === 6;
-      // 请假不计工作量；补班覆盖节假日和周末，但不覆盖个人请假。
-      const isWorkingDay = !isLeave && (isWorkday || (!isHoliday && !isWeekend));
+      const isWorkingDay = isWorking(date);
       const currentEvents = layoutEvents.filter(
         (event) => !date.isBefore(event.start, 'day') && !date.isAfter(event.end, 'day'),
       );
@@ -65,53 +105,112 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
               }[position];
 
               return (
-                <span
+                <Tooltip
                   key={event.key}
-                  css={[styles.bar, rangeStyle, !isWorkingDay && styles.nonWorkingBar]}
-                  data-working-day={isWorkingDay}
-                  data-range-position={position}
-                  title={event.title}
-                  role={onEventClick ? 'button' : undefined}
-                  tabIndex={onEventClick ? 0 : undefined}
-                  aria-label={isWorkingDay ? event.title : `${event.title}（当天不计工作量）`}
-                  onClick={(clickEvent) => {
-                    // 任务交互不向日期单元格冒泡，保留日历自身的日期选择逻辑。
-                    clickEvent.stopPropagation();
-                    onEventClick?.(event, { date, lane: event.lane, position, isWorkingDay });
-                  }}
-                  onKeyDown={(keyEvent) => {
-                    // 避免日历响应任务上的键盘操作；自定义内容自行处理内部交互。
-                    keyEvent.stopPropagation();
-                    if (
-                      onEventClick &&
-                      keyEvent.target === keyEvent.currentTarget &&
-                      (keyEvent.key === 'Enter' || keyEvent.key === ' ')
-                    ) {
-                      keyEvent.preventDefault();
-                      if (!keyEvent.repeat) {
-                        onEventClick(event, { date, lane: event.lane, position, isWorkingDay });
-                      }
-                    }
-                  }}
-                  style={{
-                    cursor: onEventClick ? 'pointer' : undefined,
-                    backgroundColor: isWorkingDay ? event.color ?? token.colorPrimary : undefined,
-                    gridRow: event.lane + 1,
-                  }}
+                  title={<div style={{ whiteSpace: 'pre-line' }}>{eventTitles.get(event.key)}</div>}
+                  open={dragging ? false : undefined}
                 >
-                  {renderEvent
-                    ? renderEvent(event, { date, lane: event.lane, position, isWorkingDay })
-                    : position === 'start' || position === 'single'
-                      ? event.title
-                      : null}
-                </span>
+                  <span
+                    draggable={editable && Boolean(onEventMove)}
+                    onDragStart={(dragEvent) => {
+                      // 两端手柄会阻止冒泡，任务主体只触发整体移动。
+                      if (!editable || !onEventMove) return;
+                      dragEvent.stopPropagation();
+                      dragEvent.dataTransfer.effectAllowed = 'move';
+                      dragEvent.dataTransfer.setData('text/plain', event.key);
+                      const rect = dragEvent.currentTarget.getBoundingClientRect();
+                      dragEvent.dataTransfer.setDragImage(dragEvent.currentTarget,
+                        Math.max(0, Math.min(rect.width, dragEvent.clientX - rect.left)),
+                        Math.max(0, Math.min(rect.height, dragEvent.clientY - rect.top)));
+                      suppressClick.current = true;
+                      setDragging({ event, edge: 'move' });
+                    }}
+                    onDragEnd={() => { setDragging(null); setDropDate(null); }}
+                    css={[
+                      styles.bar,
+                      rangeStyle,
+                      !isWorkingDay && styles.nonWorkingBar,
+                      dragging?.event.key === event.key && styles.draggingBar,
+                    ]}
+                    data-dragging={dragging?.event.key === event.key ? 'true' : undefined}
+                    data-working-day={isWorkingDay}
+                    data-range-position={position}
+                    onPointerDown={() => { suppressClick.current = false; }}
+                    role={onEventClick ? 'button' : undefined}
+                    tabIndex={onEventClick ? 0 : undefined}
+                    aria-label={isWorkingDay ? event.title : `${event.title}（当天不计工作量）`}
+                    onClick={(clickEvent) => {
+                      // 任务交互不向日期单元格冒泡，保留日历自身的日期选择逻辑。
+                      clickEvent.stopPropagation();
+                      if (suppressClick.current) return;
+                      onEventClick?.(event, { date, lane: event.lane, position, isWorkingDay });
+                    }}
+                    onKeyDown={(keyEvent) => {
+                      // 避免日历响应任务上的键盘操作；自定义内容自行处理内部交互。
+                      keyEvent.stopPropagation();
+                      if (
+                        onEventClick &&
+                        keyEvent.target === keyEvent.currentTarget &&
+                        (keyEvent.key === 'Enter' || keyEvent.key === ' ')
+                      ) {
+                        keyEvent.preventDefault();
+                        if (!keyEvent.repeat) {
+                          onEventClick(event, { date, lane: event.lane, position, isWorkingDay });
+                        }
+                      }
+                    }}
+                    style={{
+                      cursor: editable && onEventMove ? 'grab' : onEventClick ? 'pointer' : undefined,
+                      backgroundColor: isWorkingDay ? event.color ?? token.colorPrimary : undefined,
+                      gridRow: event.lane + 1,
+                    }}
+                  >
+                    {editable && onEventResize && (['start', 'end'] as const).map((edge) =>
+                      (position === edge || position === 'single') && (
+                        <span
+                          key={edge}
+                          css={styles.resizeHandle}
+                          data-resize-edge={edge}
+                          draggable
+                          title={`拖动调整${edge === 'start' ? '开始' : '结束'}日期`}
+                          aria-label={`调整${event.title}的${edge === 'start' ? '开始' : '结束'}日期`}
+                          onPointerDown={(pointerEvent) => pointerEvent.stopPropagation()}
+                          onClick={(clickEvent) => { clickEvent.stopPropagation(); }}
+                          onDragStart={(dragEvent) => {
+                            dragEvent.stopPropagation();
+                            dragEvent.dataTransfer.effectAllowed = 'move';
+                            dragEvent.dataTransfer.setData('text/plain', event.key);
+                            // 使用任务片段作为鼠标拖影，避免只显示手柄图标。
+                            const bar = dragEvent.currentTarget.parentElement;
+                            if (bar) {
+                              const rect = bar.getBoundingClientRect();
+                              dragEvent.dataTransfer.setDragImage(
+                                bar,
+                                Math.max(0, Math.min(rect.width, dragEvent.clientX - rect.left)),
+                                Math.max(0, Math.min(rect.height, dragEvent.clientY - rect.top)),
+                              );
+                            }
+                            suppressClick.current = true;
+                            setDragging({ event, edge });
+                          }}
+                          onDragEnd={() => { setDragging(null); setDropDate(null); }}
+                        >↔</span>
+                      ),
+                    )}
+                    {renderEvent
+                      ? renderEvent(event, { date, lane: event.lane, position, isWorkingDay })
+                      : position === 'start' || position === 'single'
+                        ? event.title
+                        : null}
+                  </span>
+                </Tooltip>
               );
             })}
           </div>
         </div>
       );
     },
-    [layoutEvents, marksByDate, renderEvent, onEventClick, styles, token.colorPrimary],
+    [layoutEvents, isWorking, eventTitles, renderEvent, onEventClick, editable, onEventResize, onEventMove, dragging, styles, token.colorPrimary],
   );
 
   const dateFullCellRender = useCallback<NonNullable<CalendarProps<Dayjs>['dateFullCellRender']>>(
@@ -132,6 +231,31 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
             date.isSame(dayjs(), 'day') ? `${calendarPrefix}-date-today` : '',
           ].filter(Boolean).join(' ')}
           css={[styles.date, holiday && styles.holiday]}
+          data-drop-target={dropDate === date.format('YYYY-MM-DD') ? 'true' : undefined}
+          onDragOver={(dragEvent) => {
+            if (!dragging) return;
+            dragEvent.preventDefault();
+            dragEvent.stopPropagation();
+            const range = resizeRange(date);
+            dragEvent.dataTransfer.dropEffect = range ? 'move' : 'none';
+            setDropDate(range ? date.format('YYYY-MM-DD') : null);
+          }}
+          onDragLeave={(dragEvent) => {
+            if (!dragEvent.currentTarget.contains(dragEvent.relatedTarget as Node | null)) setDropDate(null);
+          }}
+          onDrop={(dragEvent) => {
+            if (!dragging) return;
+            dragEvent.preventDefault();
+            dragEvent.stopPropagation();
+            const range = resizeRange(date);
+            const original = dragging.event;
+            setDragging(null);
+            setDropDate(null);
+            if (range && (!range.start.isSame(original.start, 'day') || !range.end.isSame(original.end, 'day'))) {
+              if (dragging.edge === 'move') onEventMove?.(original, range);
+              else onEventResize?.(original, range);
+            }
+          }}
           data-holiday={holiday ? 'true' : undefined}
         >
           <div className={`${calendarPrefix}-date-value`} css={styles.dateHeader}>
@@ -152,7 +276,7 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
         </div>
       );
     },
-    [marksByDate, prefixCls, styles, dateCellRender],
+    [marksByDate, prefixCls, styles, dateCellRender, dragging, dropDate, resizeRange, onEventResize, onEventMove],
   );
 
   return <Calendar {...calendarProps} css={styles.calendar} dateFullCellRender={dateFullCellRender} />;

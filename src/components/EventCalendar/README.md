@@ -117,3 +117,38 @@ function TeamSchedule({ events }: { events: TeamEvent[] }) {
 节假日、周末、请假日上的任务以半透明灰色背景和半透明灰色虚线边框显示，表示当天不计工作量。补班恢复任务原色；若补班日同时请假，仍按请假显示灰色。片段保持原泳道、尺寸、连接和点击行为，保证任务连续可见。
 
 `renderEvent`、`onEventClick` 回调的 `info.isWorkingDay` 表示当前片段是否计入工作量。此标记不改变任务日期或详情中的自然日持续天数；当前请假标记作用于该日所有任务。
+
+## 编辑模式
+
+```tsx
+<EventCalendar
+  events={events}
+  editable={editable}
+  onEventResize={(event, { start, end }) => {
+    calendarStorage.events.update(event.key, {
+      start: start.format('YYYY-MM-DD'),
+      end: end.format('YYYY-MM-DD'),
+    });
+  }}
+/>
+```
+
+`editable` 默认为 false。开启并提供 `onEventResize` 后，鼠标悬停任务真实两端显示 ↔ 手柄，拖动到目标日期并松开后才回调。业务方负责保存并更新 events。支持单日任务、当前面板内跨周拖动；禁止逆序日期、disabledDate 和 validRange 外的目标。拖动取消或日期未变化不提交。
+
+手柄交互不会触发日期选择或任务详情。当前使用桌面原生拖放，不包含触屏支持和自动翻月。demo 顶部提供模式按钮，回调调用存储 API；拖动完成后保存到 localStorage，刷新后保留已修改的日期。
+
+拖动时，同一任务的所有可见片段变为半透明并显示阴影，鼠标拖影使用任务片段。完成或取消拖动后恢复原样式，其他任务不受影响。
+
+## 整体移动任务
+
+编辑模式下传入 `onEventMove(event, { start, end })` 可拖动任务主体。落点为新开始日期，结束日期自动保持原任务的工作日数：跳过周末、节假日和请假，补班计入；请假优先于补班。落在非工作日时保留落点，从后续工作日开始计数。零工作日任务不整体移动，仍可 resize。
+
+`onEventMove` 与 `onEventResize` 相互独立：任务主体移动保持工作日工期，两端手柄仍直接修改对应日期。demo 使用同一个保存函数将两种操作写入本地存储。日历不会自动请求节假日数据，调用方需提供覆盖计算区间的 dateMarks。新起止日期超出 validRange 或被 disabledDate 禁用时不提交。
+
+## 悬停提示
+
+悬停任务条通过 Ant Design `Tooltip` 查看标题、起止日期、自然日时长和有效工作日数（均含首尾日期）。工作日计算排除周末、节假日和请假，计入补班，与整体移动的工期口径一致。修改日期或标记后自动更新。
+
+任务提示不使用原生 title；拖动期间自动隐藏 Tooltip。
+
+任务编辑的职责划分、状态流转、事件隔离、工作日计算和保存流程，见 [开发教程第 7.9 节](../../../docs/event-calendar-from-scratch.md#79-任务编辑的设计与实现思路)。

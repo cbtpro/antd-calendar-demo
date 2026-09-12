@@ -31,6 +31,10 @@ const useStyle = (customizePrefixCls?: string) => {
       date: css`
         position: relative;
         isolation: isolate;
+        &[data-drop-target='true'] {
+          outline: 2px dashed ${token.colorPrimary};
+          outline-offset: -2px;
+        }
       `,
       holiday: css`
         &::after {
@@ -77,7 +81,25 @@ const useStyle = (customizePrefixCls?: string) => {
         gap: ${marginXXS}px;
         margin-top: ${marginXXS}px;
       `,
+      resizeHandle: css`
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 14px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.55);
+        color: #fff;
+        cursor: ew-resize;
+        opacity: 0;
+        z-index: 1;
+        &[data-resize-edge='start'] { inset-inline-start: 0; }
+        &[data-resize-edge='end'] { inset-inline-end: 0; }
+      `,
       bar: css`
+        position: relative;
+        &:hover [data-resize-edge] { opacity: 1; }
         display: block;
         height: calc(${controlHeightSM}px - ${marginXXS}px);
         overflow: hidden;
@@ -85,6 +107,11 @@ const useStyle = (customizePrefixCls?: string) => {
         font-size: ${fontSizeSM}px;
         white-space: nowrap;
         text-overflow: ellipsis;
+      `,
+      draggingBar: css`
+        /* 同一任务的所有可见片段一起淡化，阴影不改变泳道布局。 */
+        opacity: 0.5;
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
       `,
       nonWorkingBar: css`
         /* 边框计入片段尺寸，中间片段不画左右边框，保持跨天连接。 */

@@ -57,7 +57,7 @@ calendar: css`
 
 我们希望一条任务在起止日期之间每天出现，并在同一天与其他任务分行显示。同一条任务跨天时始终占据同一行；前面的任务结束后，空位仍然保留。
 
-本 demo 将起止日期都计为占用日，使用自然日比较。跨周、跨月仍保持相同行号，但每个日期单元格各自绘制片段，不是用一个 DOM 元素横跨整个月。当前不包含拖拽排期、任务编辑、服务端存储、按小时排程或年视图任务汇总。
+本 demo 将起止日期都计为占用日，使用自然日比较。跨周、跨月仍保持相同行号，但每个日期单元格各自绘制片段，不是用一个 DOM 元素横跨整个月。支持编辑模式下拖动任务两端调整日期；支持保持工作日数的任务整体移动；当前不包含标题编辑、服务端存储、按小时排程或年视图任务汇总。
 
 实现分成三个部分：
 
@@ -266,6 +266,12 @@ export type EventCalendarProps<T extends CalendarEvent = CalendarEvent> = Omit<
   | 'monthFullCellRender'
 > & {
   events: readonly T[];
+  /** 编辑模式下显示起止日期拖动手柄。 */
+  editable?: boolean;
+  /** 整体移动时保持工作日数，由业务方保存重新计算的起止日期。 */
+  onEventMove?: (event: T, range: { start: Dayjs; end: Dayjs }) => void;
+  /** 两端缩放完成后由业务方保存新日期，不自动顺延工期。 */
+  onEventResize?: (event: T, range: { start: Dayjs; end: Dayjs }) => void;
   /** 可同时标记调休安排和请假；补班优先于节假日、周末样式。 */
   dateMarks?: readonly CalendarDateMark[];
   /** 自定义任务在每天的片段内容，同时保留组件的布局。 */
@@ -458,6 +464,10 @@ const useStyle = (customizePrefixCls?: string) => {
       date: css`
         position: relative;
         isolation: isolate;
+        &[data-drop-target='true'] {
+          outline: 2px dashed ${token.colorPrimary};
+          outline-offset: -2px;
+        }
       `,
       holiday: css`
         &::after {
@@ -504,7 +514,25 @@ const useStyle = (customizePrefixCls?: string) => {
         gap: ${marginXXS}px;
         margin-top: ${marginXXS}px;
       `,
+      resizeHandle: css`
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 14px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.55);
+        color: #fff;
+        cursor: ew-resize;
+        opacity: 0;
+        z-index: 1;
+        &[data-resize-edge='start'] { inset-inline-start: 0; }
+        &[data-resize-edge='end'] { inset-inline-end: 0; }
+      `,
       bar: css`
+        position: relative;
+        &:hover [data-resize-edge] { opacity: 1; }
         display: block;
         height: calc(${controlHeightSM}px - ${marginXXS}px);
         overflow: hidden;
@@ -512,6 +540,11 @@ const useStyle = (customizePrefixCls?: string) => {
         font-size: ${fontSizeSM}px;
         white-space: nowrap;
         text-overflow: ellipsis;
+      `,
+      draggingBar: css`
+        /* 同一任务的所有可见片段一起淡化，阴影不改变泳道布局。 */
+        opacity: 0.5;
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
       `,
       nonWorkingBar: css`
         /* 边框计入片段尺寸，中间片段不画左右边框，保持跨天连接。 */
@@ -598,16 +631,63 @@ CSS Grid 行号从 1 开始，算法从 0 开始，所以需要 `+ 1`。即使�
 5. 若传入 `renderEvent`，由业务方生成片段内容。
 6. 通过 Emotion 的 `css` 属性给 Calendar 根节点附加样式类，将其他 Calendar props 透传。
 
+创建 `src/components/EventCalendar/workday.ts`：
+
+```ts
+import type { Dayjs } from 'dayjs';
+import type { CalendarDateMark, CalendarEvent } from './types';
+
+/** 请假优先；补班覆盖节假日和周末。 */
+export function isWorkingDate(date: Dayjs, marks: readonly CalendarDateMark[]) {
+  if (marks.some((mark) => mark.type === 'leave')) return false;
+  if (marks.some((mark) => mark.type === 'workday')) return true;
+  return !marks.some((mark) => mark.type === 'holiday') && date.day() !== 0 && date.day() !== 6;
+}
+
+/** 统计包含首尾日期的有效工作日数，与任务整体移动使用相同口径。 */
+export function countWorkingDays(
+  event: Pick<CalendarEvent, 'start' | 'end'>,
+  isWorking: (date: Dayjs) => boolean,
+) {
+  let count = 0;
+  for (let date = event.start.startOf('day'); !date.isAfter(event.end, 'day'); date = date.add(1, 'day')) {
+    if (isWorking(date)) count += 1;
+  }
+  return count;
+}
+
+/** 保留原区间内的工作日数，落点为新开始日期，非工作日不消耗工期。 */
+export function moveEventRange(
+  event: Pick<CalendarEvent, 'start' | 'end'>,
+  target: Dayjs,
+  isWorking: (date: Dayjs) => boolean,
+) {
+  if (!target.isValid() || !event.start.isValid() || !event.end.isValid() || event.start.isAfter(event.end, 'day')) return null;
+  let remaining = countWorkingDays(event, isWorking);
+  // 没有工作量的任务不自动推算，仍可通过两端手柄调整。
+  if (!remaining) return null;
+  const start = target.startOf('day');
+  if (start.isSame(event.start, 'day')) return { start: event.start, end: event.end };
+  let end = start;
+  while (remaining > 0) {
+    if (isWorking(end)) remaining -= 1;
+    if (remaining > 0) end = end.add(1, 'day');
+  }
+  return { start, end };
+}
+```
+
 创建 `src/components/EventCalendar/EventCalendar.tsx`：
 
 ```tsx
 /** @jsxImportSource @emotion/react */
-import { useCallback, useMemo } from 'react';
-import { Calendar, theme } from 'antd';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Calendar, Tooltip, theme } from 'antd';
 import type { CalendarProps } from 'antd';
 import dayjs from 'dayjs';
 import type { Dayjs } from 'dayjs';
 
+import { countWorkingDays, isWorkingDate, moveEventRange } from './workday';
 import { assignEventLanes } from './eventLayout';
 import useStyle from './useStyle';
 import type { CalendarDateMark, CalendarEvent, EventCalendarProps, EventRenderInfo } from './types';
@@ -627,8 +707,20 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
   renderEvent,
   onEventClick,
   dateMarks,
+  editable = false,
+  onEventResize,
+  onEventMove,
   ...calendarProps
 }: EventCalendarProps<T>) {
+  const [dragging, setDragging] = useState<{ event: T; edge: 'start' | 'end' | 'move' } | null>(null);
+  const [dropDate, setDropDate] = useState<string | null>(null);
+  const suppressClick = useRef(false);
+  useEffect(() => {
+    if (!editable) {
+      setDragging(null);
+      setDropDate(null);
+    }
+  }, [editable]);
   const { token } = theme.useToken();
   const { styles, prefixCls } = useStyle(calendarProps.prefixCls);
   const layoutEvents = useMemo(() => assignEventLanes(events), [events]);
@@ -642,15 +734,42 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
     return result;
   }, [dateMarks]);
 
+  const isWorking = useCallback((date: Dayjs) =>
+    isWorkingDate(date, marksByDate.get(date.format('YYYY-MM-DD')) ?? []), [marksByDate]);
+  // 每条任务只计算一次提示内容，避免为每天的片段重复统计工期。
+  const eventTitles = useMemo(() => new Map(events.map((event) => [
+    event.key,
+    [
+      event.title,
+      `日期：${event.start.format('YYYY-MM-DD')} 至 ${event.end.format('YYYY-MM-DD')}`,
+      `任务时长：${event.end.startOf('day').diff(event.start.startOf('day'), 'day') + 1} 个自然日`,
+      `有效工期：${countWorkingDays(event, isWorking)} 个工作日`,
+    ].join('\n'),
+  ])), [events, isWorking]);
+  const resizeRange = useCallback((date: Dayjs) => {
+    if (!editable || !dragging) return null;
+    let range: { start: Dayjs; end: Dayjs } | null;
+    if (dragging.edge === 'move') {
+      if (!onEventMove) return null;
+      range = moveEventRange(dragging.event, date, isWorking);
+    } else {
+      if (!onEventResize) return null;
+      range = {
+        start: dragging.edge === 'start' ? date : dragging.event.start,
+        end: dragging.edge === 'end' ? date : dragging.event.end,
+      };
+    }
+    if (!range || range.start.isAfter(range.end, 'day')) return null;
+    const targets = dragging.edge === 'move' ? [range.start, range.end] : [date];
+    const validRange = calendarProps.validRange;
+    if (targets.some((target) => calendarProps.disabledDate?.(target) ||
+      (validRange && (target.isBefore(validRange[0], 'day') || target.isAfter(validRange[1], 'day'))))) return null;
+    return range;
+  }, [editable, dragging, onEventResize, onEventMove, isWorking, calendarProps.disabledDate, calendarProps.validRange]);
+
   const dateCellRender = useCallback<NonNullable<CalendarProps<Dayjs>['dateCellRender']>>(
     (date) => {
-      const marks = marksByDate.get(date.format('YYYY-MM-DD')) ?? [];
-      const isLeave = marks.some((mark) => mark.type === 'leave');
-      const isWorkday = marks.some((mark) => mark.type === 'workday');
-      const isHoliday = marks.some((mark) => mark.type === 'holiday');
-      const isWeekend = date.day() === 0 || date.day() === 6;
-      // 请假不计工作量；补班覆盖节假日和周末，但不覆盖个人请假。
-      const isWorkingDay = !isLeave && (isWorkday || (!isHoliday && !isWeekend));
+      const isWorkingDay = isWorking(date);
       const currentEvents = layoutEvents.filter(
         (event) => !date.isBefore(event.start, 'day') && !date.isAfter(event.end, 'day'),
       );
@@ -668,53 +787,112 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
               }[position];
 
               return (
-                <span
+                <Tooltip
                   key={event.key}
-                  css={[styles.bar, rangeStyle, !isWorkingDay && styles.nonWorkingBar]}
-                  data-working-day={isWorkingDay}
-                  data-range-position={position}
-                  title={event.title}
-                  role={onEventClick ? 'button' : undefined}
-                  tabIndex={onEventClick ? 0 : undefined}
-                  aria-label={isWorkingDay ? event.title : `${event.title}（当天不计工作量）`}
-                  onClick={(clickEvent) => {
-                    // 任务交互不向日期单元格冒泡，保留日历自身的日期选择逻辑。
-                    clickEvent.stopPropagation();
-                    onEventClick?.(event, { date, lane: event.lane, position, isWorkingDay });
-                  }}
-                  onKeyDown={(keyEvent) => {
-                    // 避免日历响应任务上的键盘操作；自定义内容自行处理内部交互。
-                    keyEvent.stopPropagation();
-                    if (
-                      onEventClick &&
-                      keyEvent.target === keyEvent.currentTarget &&
-                      (keyEvent.key === 'Enter' || keyEvent.key === ' ')
-                    ) {
-                      keyEvent.preventDefault();
-                      if (!keyEvent.repeat) {
-                        onEventClick(event, { date, lane: event.lane, position, isWorkingDay });
-                      }
-                    }
-                  }}
-                  style={{
-                    cursor: onEventClick ? 'pointer' : undefined,
-                    backgroundColor: isWorkingDay ? event.color ?? token.colorPrimary : undefined,
-                    gridRow: event.lane + 1,
-                  }}
+                  title={<div style={{ whiteSpace: 'pre-line' }}>{eventTitles.get(event.key)}</div>}
+                  open={dragging ? false : undefined}
                 >
-                  {renderEvent
-                    ? renderEvent(event, { date, lane: event.lane, position, isWorkingDay })
-                    : position === 'start' || position === 'single'
-                      ? event.title
-                      : null}
-                </span>
+                  <span
+                    draggable={editable && Boolean(onEventMove)}
+                    onDragStart={(dragEvent) => {
+                      // 两端手柄会阻止冒泡，任务主体只触发整体移动。
+                      if (!editable || !onEventMove) return;
+                      dragEvent.stopPropagation();
+                      dragEvent.dataTransfer.effectAllowed = 'move';
+                      dragEvent.dataTransfer.setData('text/plain', event.key);
+                      const rect = dragEvent.currentTarget.getBoundingClientRect();
+                      dragEvent.dataTransfer.setDragImage(dragEvent.currentTarget,
+                        Math.max(0, Math.min(rect.width, dragEvent.clientX - rect.left)),
+                        Math.max(0, Math.min(rect.height, dragEvent.clientY - rect.top)));
+                      suppressClick.current = true;
+                      setDragging({ event, edge: 'move' });
+                    }}
+                    onDragEnd={() => { setDragging(null); setDropDate(null); }}
+                    css={[
+                      styles.bar,
+                      rangeStyle,
+                      !isWorkingDay && styles.nonWorkingBar,
+                      dragging?.event.key === event.key && styles.draggingBar,
+                    ]}
+                    data-dragging={dragging?.event.key === event.key ? 'true' : undefined}
+                    data-working-day={isWorkingDay}
+                    data-range-position={position}
+                    onPointerDown={() => { suppressClick.current = false; }}
+                    role={onEventClick ? 'button' : undefined}
+                    tabIndex={onEventClick ? 0 : undefined}
+                    aria-label={isWorkingDay ? event.title : `${event.title}（当天不计工作量）`}
+                    onClick={(clickEvent) => {
+                      // 任务交互不向日期单元格冒泡，保留日历自身的日期选择逻辑。
+                      clickEvent.stopPropagation();
+                      if (suppressClick.current) return;
+                      onEventClick?.(event, { date, lane: event.lane, position, isWorkingDay });
+                    }}
+                    onKeyDown={(keyEvent) => {
+                      // 避免日历响应任务上的键盘操作；自定义内容自行处理内部交互。
+                      keyEvent.stopPropagation();
+                      if (
+                        onEventClick &&
+                        keyEvent.target === keyEvent.currentTarget &&
+                        (keyEvent.key === 'Enter' || keyEvent.key === ' ')
+                      ) {
+                        keyEvent.preventDefault();
+                        if (!keyEvent.repeat) {
+                          onEventClick(event, { date, lane: event.lane, position, isWorkingDay });
+                        }
+                      }
+                    }}
+                    style={{
+                      cursor: editable && onEventMove ? 'grab' : onEventClick ? 'pointer' : undefined,
+                      backgroundColor: isWorkingDay ? event.color ?? token.colorPrimary : undefined,
+                      gridRow: event.lane + 1,
+                    }}
+                  >
+                    {editable && onEventResize && (['start', 'end'] as const).map((edge) =>
+                      (position === edge || position === 'single') && (
+                        <span
+                          key={edge}
+                          css={styles.resizeHandle}
+                          data-resize-edge={edge}
+                          draggable
+                          title={`拖动调整${edge === 'start' ? '开始' : '结束'}日期`}
+                          aria-label={`调整${event.title}的${edge === 'start' ? '开始' : '结束'}日期`}
+                          onPointerDown={(pointerEvent) => pointerEvent.stopPropagation()}
+                          onClick={(clickEvent) => { clickEvent.stopPropagation(); }}
+                          onDragStart={(dragEvent) => {
+                            dragEvent.stopPropagation();
+                            dragEvent.dataTransfer.effectAllowed = 'move';
+                            dragEvent.dataTransfer.setData('text/plain', event.key);
+                            // 使用任务片段作为鼠标拖影，避免只显示手柄图标。
+                            const bar = dragEvent.currentTarget.parentElement;
+                            if (bar) {
+                              const rect = bar.getBoundingClientRect();
+                              dragEvent.dataTransfer.setDragImage(
+                                bar,
+                                Math.max(0, Math.min(rect.width, dragEvent.clientX - rect.left)),
+                                Math.max(0, Math.min(rect.height, dragEvent.clientY - rect.top)),
+                              );
+                            }
+                            suppressClick.current = true;
+                            setDragging({ event, edge });
+                          }}
+                          onDragEnd={() => { setDragging(null); setDropDate(null); }}
+                        >↔</span>
+                      ),
+                    )}
+                    {renderEvent
+                      ? renderEvent(event, { date, lane: event.lane, position, isWorkingDay })
+                      : position === 'start' || position === 'single'
+                        ? event.title
+                        : null}
+                  </span>
+                </Tooltip>
               );
             })}
           </div>
         </div>
       );
     },
-    [layoutEvents, marksByDate, renderEvent, onEventClick, styles, token.colorPrimary],
+    [layoutEvents, isWorking, eventTitles, renderEvent, onEventClick, editable, onEventResize, onEventMove, dragging, styles, token.colorPrimary],
   );
 
   const dateFullCellRender = useCallback<NonNullable<CalendarProps<Dayjs>['dateFullCellRender']>>(
@@ -735,6 +913,31 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
             date.isSame(dayjs(), 'day') ? `${calendarPrefix}-date-today` : '',
           ].filter(Boolean).join(' ')}
           css={[styles.date, holiday && styles.holiday]}
+          data-drop-target={dropDate === date.format('YYYY-MM-DD') ? 'true' : undefined}
+          onDragOver={(dragEvent) => {
+            if (!dragging) return;
+            dragEvent.preventDefault();
+            dragEvent.stopPropagation();
+            const range = resizeRange(date);
+            dragEvent.dataTransfer.dropEffect = range ? 'move' : 'none';
+            setDropDate(range ? date.format('YYYY-MM-DD') : null);
+          }}
+          onDragLeave={(dragEvent) => {
+            if (!dragEvent.currentTarget.contains(dragEvent.relatedTarget as Node | null)) setDropDate(null);
+          }}
+          onDrop={(dragEvent) => {
+            if (!dragging) return;
+            dragEvent.preventDefault();
+            dragEvent.stopPropagation();
+            const range = resizeRange(date);
+            const original = dragging.event;
+            setDragging(null);
+            setDropDate(null);
+            if (range && (!range.start.isSame(original.start, 'day') || !range.end.isSame(original.end, 'day'))) {
+              if (dragging.edge === 'move') onEventMove?.(original, range);
+              else onEventResize?.(original, range);
+            }
+          }}
           data-holiday={holiday ? 'true' : undefined}
         >
           <div className={`${calendarPrefix}-date-value`} css={styles.dateHeader}>
@@ -755,7 +958,7 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
         </div>
       );
     },
-    [marksByDate, prefixCls, styles, dateCellRender],
+    [marksByDate, prefixCls, styles, dateCellRender, dragging, dropDate, resizeRange, onEventResize, onEventMove],
   );
 
   return <Calendar {...calendarProps} css={styles.calendar} dateFullCellRender={dateFullCellRender} />;
@@ -785,145 +988,452 @@ export type { CalendarDateMark, CalendarEvent, EventCalendarProps, EventRenderIn
 
 任务颜色仅用于辅助区分不同任务，可按需设置，没有业务含义。泳道分配和跨天对齐不依赖颜色。
 
+### 7.0 首次初始化本地存储
+
+模拟数据集中放在 `src/data/calendarSeed.ts`，首次使用时写入 localStorage，之后刷新加载已有数据。本次页面内，只有用户操作主动调用增删改 API 才会修改数据；查询与组件重渲染不会重置或写入。demo 使用 `useCalendarData` 读取数据，不再在组件中每次生成模拟任务。
+
+存储日期采用 `YYYY-MM-DD`，读到展示层时转回 Dayjs，避免 JSON 序列化造成自然日偏移。任务和日期标记分别封装 `query`、`get`、`insert`、`update`、`remove` 方法。查询任务时按起止日期区间是否重叠筛选，包含跨月任务。
+
+以下三个文件与后面的 demo 一起创建。存储层使用版本字段校验数据，读取损坏内容或写入失败时报告错误。页面启动时调用 `initialize()`，仅存储键不存在时初始化模拟数据，普通读取不会自动修复或覆盖。
+
+创建 `src/data/calendarStorage.ts`：
+
+```ts
+import dayjs from 'dayjs';
+import type { CalendarDateMark } from '../components/EventCalendar';
+import { initialDateMarks, initialEvents } from './calendarSeed';
+
+/** 存储自然日字符串，避免 JSON 序列化 Dayjs 后产生时区偏移。 */
+export interface StoredEvent {
+  key: string;
+  title: string;
+  start: string;
+  end: string;
+  color?: string;
+}
+
+export interface StoredDateMark {
+  date: string;
+  type: CalendarDateMark['type'];
+  label?: string;
+}
+
+interface CalendarData {
+  version: 1;
+  events: StoredEvent[];
+  dateMarks: StoredDateMark[];
+}
+
+export const CALENDAR_STORAGE_KEY = 'event-calendar-demo:data:v1';
+export const CALENDAR_STORAGE_CHANGE = 'event-calendar-demo:storage-change';
+
+type DateQuery = { start?: string; end?: string };
+
+function assertDate(value: unknown): asserts value is string {
+  if (
+    typeof value !== 'string' ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(value) ||
+    !dayjs(value).isValid() ||
+    dayjs(value).format('YYYY-MM-DD') !== value
+  ) {
+    throw new Error('日期必须是有效的 YYYY-MM-DD 字符串');
+  }
+}
+
+function validateEvent(event: StoredEvent) {
+  if (!event || typeof event.key !== 'string' || !event.key.trim() ||
+      typeof event.title !== 'string' || !event.title.trim()) {
+    throw new Error('任务标识和标题不能为空');
+  }
+  assertDate(event.start);
+  assertDate(event.end);
+  if (event.start > event.end) throw new Error('任务开始日期不能晚于结束日期');
+  if (event.color !== undefined && typeof event.color !== 'string') throw new Error('任务颜色必须是字符串');
+}
+
+function validateMark(mark: StoredDateMark) {
+  if (!mark) throw new Error('日期标记不能为空');
+  assertDate(mark.date);
+  if (!['holiday', 'workday', 'leave'].includes(mark.type)) throw new Error('日期标记类型无效');
+  if (mark.label !== undefined && typeof mark.label !== 'string') throw new Error('标记说明必须是字符串');
+}
+
+function validateData(data: CalendarData) {
+  if (!data || data.version !== 1 || !Array.isArray(data.events) || !Array.isArray(data.dateMarks)) {
+    throw new Error('本地日历数据格式或版本不受支持，原数据已保留');
+  }
+  data.events.forEach(validateEvent);
+  data.dateMarks.forEach(validateMark);
+  if (new Set(data.events.map((event) => event.key)).size !== data.events.length) throw new Error('任务标识重复');
+  if (new Set(data.dateMarks.map((mark) => `${mark.date}:${mark.type}`)).size !== data.dateMarks.length) {
+    throw new Error('同一天的同类型标记重复');
+  }
+}
+
+function validateQuery(query: DateQuery) {
+  if (query.start !== undefined) assertDate(query.start);
+  if (query.end !== undefined) assertDate(query.end);
+  if (query.start && query.end && query.start > query.end) throw new Error('查询开始日期不能晚于结束日期');
+}
+
+/** 可注入 Storage 实现，便于测试；每次操作均读取最新数据。 */
+export function createCalendarStorage(getStorage: () => Pick<Storage, 'getItem' | 'setItem'>, notify = () => {}) {
+  const write = (data: CalendarData) => {
+    validateData(data);
+    getStorage().setItem(CALENDAR_STORAGE_KEY, JSON.stringify(data));
+    // 仅在成功持久化后通知当前页面刷新。
+    notify();
+  };
+  const seed = (): CalendarData => ({
+    version: 1,
+    events: initialEvents.map((event) => ({ ...event })),
+    dateMarks: initialDateMarks.map((mark) => ({ ...mark })),
+  });
+  const read = (): CalendarData => {
+    const raw = getStorage().getItem(CALENDAR_STORAGE_KEY);
+    if (raw === null) throw new Error('日历存储尚未初始化');
+    // 数据损坏时抛出错误，不用模拟数据覆盖已有内容。
+    const data: CalendarData = JSON.parse(raw);
+    validateData(data);
+    return data;
+  };
+
+  return {
+    /** 页面启动时传 reset 恢复模拟数据；普通查询不执行初始化或写入。 */
+    initialize({ reset = false }: { reset?: boolean } = {}) {
+      if (reset || getStorage().getItem(CALENDAR_STORAGE_KEY) === null) {
+        const data = seed();
+        write(data);
+        return data;
+      }
+      return read();
+    },
+    query() { return read(); },
+    events: {
+      query(query: DateQuery = {}) {
+        validateQuery(query);
+        return read().events.filter((event) =>
+          (!query.start || event.end >= query.start) && (!query.end || event.start <= query.end));
+      },
+      get(key: string) { return read().events.find((event) => event.key === key); },
+      insert(event: StoredEvent) {
+        validateEvent(event);
+        const data = read();
+        if (data.events.some((item) => item.key === event.key)) throw new Error('任务标识已存在');
+        data.events.push({ ...event });
+        write(data);
+        return { ...event };
+      },
+      update(key: string, patch: Partial<Omit<StoredEvent, 'key'>>) {
+        const data = read();
+        const index = data.events.findIndex((event) => event.key === key);
+        if (index === -1) throw new Error('任务不存在');
+        const event = { ...data.events[index], ...patch, key };
+        data.events[index] = event;
+        write(data);
+        return event;
+      },
+      remove(key: string) {
+        const data = read();
+        const index = data.events.findIndex((event) => event.key === key);
+        if (index === -1) return false;
+        data.events.splice(index, 1);
+        write(data);
+        return true;
+      },
+    },
+    dateMarks: {
+      query(query: DateQuery = {}) {
+        validateQuery(query);
+        return read().dateMarks.filter((mark) =>
+          (!query.start || mark.date >= query.start) && (!query.end || mark.date <= query.end));
+      },
+      get(date: string, type: StoredDateMark['type']) {
+        assertDate(date);
+        return read().dateMarks.find((mark) => mark.date === date && mark.type === type);
+      },
+      insert(mark: StoredDateMark) {
+        validateMark(mark);
+        const data = read();
+        if (data.dateMarks.some((item) => item.date === mark.date && item.type === mark.type)) {
+          throw new Error('该日期的同类型标记已存在');
+        }
+        data.dateMarks.push({ ...mark });
+        write(data);
+        return { ...mark };
+      },
+      update(date: string, type: StoredDateMark['type'], patch: Partial<StoredDateMark>) {
+        assertDate(date);
+        const data = read();
+        const index = data.dateMarks.findIndex((mark) => mark.date === date && mark.type === type);
+        if (index === -1) throw new Error('日期标记不存在');
+        const mark = { ...data.dateMarks[index], ...patch };
+        data.dateMarks[index] = mark;
+        write(data);
+        return mark;
+      },
+      remove(date: string, type: StoredDateMark['type']) {
+        assertDate(date);
+        const data = read();
+        const index = data.dateMarks.findIndex((mark) => mark.date === date && mark.type === type);
+        if (index === -1) return false;
+        data.dateMarks.splice(index, 1);
+        write(data);
+        return true;
+      },
+    },
+  };
+}
+
+export const calendarStorage = createCalendarStorage(
+  () => window.localStorage,
+  () => window.dispatchEvent(new Event(CALENDAR_STORAGE_CHANGE)),
+);
+```
+
+创建 `src/data/calendarSeed.ts`：
+
+```ts
+import type { StoredDateMark, StoredEvent } from './calendarStorage';
+
+// 元旦放假与补班依据 2026 年放假安排，请假记录为演示数据。
+export const initialDateMarks: StoredDateMark[] = [
+  { date: '2026-01-01', type: 'holiday', label: '元旦放假' },
+  { date: '2026-01-02', type: 'holiday', label: '元旦放假调休' },
+  { date: '2026-01-03', type: 'holiday', label: '元旦放假' },
+  { date: '2026-01-04', type: 'workday', label: '元旦补班' },
+  { date: '2026-01-14', type: 'leave', label: '请假（模拟）' },
+  { date: '2026-01-15', type: 'leave', label: '请假（模拟）' },
+];
+
+// 模拟订单后台 v2.3 迭代：开发、联调、测试、缺陷修复与灰度发布。
+export const initialEvents: StoredEvent[] = [
+  {
+    key: 'scope-review',
+    title: '订单后台 v2.3 需求与接口评审',
+    start: '2026-01-05',
+    end: '2026-01-05',
+    color: '#faad14',
+  },
+  {
+    key: 'order-query-api',
+    title: '后端：订单组合筛选与分页接口',
+    start: '2026-01-06',
+    end: '2026-01-09',
+    color: '#1677ff',
+  },
+  {
+    key: 'order-filter-ui',
+    title: '前端：订单筛选栏与 URL 状态同步',
+    start: '2026-01-06',
+    end: '2026-01-08',
+    color: '#1677ff',
+  },
+  {
+    key: 'order-table-ui',
+    title: '前端：订单列表、排序与详情抽屉',
+    start: '2026-01-09',
+    end: '2026-01-14',
+    color: '#1677ff',
+  },
+  {
+    key: 'permission-api',
+    title: '后端：订单导出权限与操作审计',
+    start: '2026-01-08',
+    end: '2026-01-13',
+    color: '#1677ff',
+  },
+  {
+    key: 'export-worker',
+    title: '后端：异步导出队列与文件下载',
+    start: '2026-01-11',
+    end: '2026-01-17',
+    color: '#1677ff',
+  },
+  {
+    key: 'order-integration',
+    title: '联调：筛选参数、分页与异常提示',
+    start: '2026-01-15',
+    end: '2026-01-16',
+    color: '#faad14',
+  },
+  {
+    key: 'export-ui',
+    title: '前端：导出进度轮询与失败重试',
+    start: '2026-01-15',
+    end: '2026-01-20',
+    color: '#1677ff',
+  },
+  {
+    key: 'order-regression',
+    title: '测试：订单查询与角色权限回归',
+    start: '2026-01-19',
+    end: '2026-01-22',
+    color: '#52c41a',
+  },
+  {
+    key: 'pagination-fix',
+    title: '修复：切换筛选条件后页码未重置',
+    start: '2026-01-20',
+    end: '2026-01-20',
+    color: '#ff4d4f',
+  },
+  {
+    key: 'export-load-test',
+    title: '测试：十万条订单导出压测',
+    start: '2026-01-21',
+    end: '2026-01-23',
+    color: '#52c41a',
+  },
+  {
+    key: 'export-memory-fix',
+    title: '修复：大批量导出内存峰值过高',
+    start: '2026-01-23',
+    end: '2026-01-27',
+    color: '#ff4d4f',
+  },
+  {
+    key: 'release-acceptance',
+    title: '验收：导出修复复测与发布检查',
+    start: '2026-01-28',
+    end: '2026-01-29',
+    color: '#52c41a',
+  },
+  {
+    key: 'production-release',
+    title: '发布：订单后台 v2.3 灰度上线',
+    start: '2026-01-30',
+    end: '2026-01-30',
+    color: '#faad14',
+  },
+  {
+    key: 'release-observation',
+    title: '观察：灰度错误率与导出队列积压',
+    start: '2026-01-30',
+    end: '2026-02-03',
+    color: '#faad14',
+  },
+];
+```
+
+创建 `src/useCalendarData.ts`：
+
+```ts
+import { useCallback, useEffect, useState } from 'react';
+import dayjs from 'dayjs';
+import type { CalendarDateMark, CalendarEvent } from './components/EventCalendar';
+import { calendarStorage, CALENDAR_STORAGE_CHANGE, CALENDAR_STORAGE_KEY } from './data/calendarStorage';
+
+/** 将持久化记录转换为日历数据，并订阅本页及其他标签页的修改。 */
+export default function useCalendarData() {
+  const [data, setData] = useState<{ events: CalendarEvent[]; dateMarks: CalendarDateMark[] }>({
+    events: [], dateMarks: [],
+  });
+  const [error, setError] = useState<string | null>(null);
+  const refresh = useCallback(() => {
+    try {
+      const stored = calendarStorage.query();
+      setData({
+        events: stored.events.map((event) => ({ ...event, start: dayjs(event.start), end: dayjs(event.end) })),
+        dateMarks: stored.dateMarks.map((mark) => ({ ...mark, date: dayjs(mark.date) })),
+      });
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '无法访问本地存储');
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      // 仅首次使用时写入模拟数据，刷新和重新挂载均保留已保存的修改。
+      calendarStorage.initialize();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '无法初始化本地存储');
+      return;
+    }
+    refresh();
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === CALENDAR_STORAGE_KEY || event.key === null) refresh();
+    };
+    window.addEventListener(CALENDAR_STORAGE_CHANGE, refresh);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener(CALENDAR_STORAGE_CHANGE, refresh);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, [refresh]);
+
+  return { ...data, error, refresh };
+}
+```
+
+调用示例（从 src 下的业务页面导入）：
+
+```ts
+import { calendarStorage } from './data/calendarStorage';
+
+calendarStorage.events.query({ start: '2026-02-01', end: '2026-02-28' });
+calendarStorage.events.insert({
+  key: 'approval-api', title: '开发审批接口',
+  start: '2026-02-04', end: '2026-02-06',
+});
+calendarStorage.events.update('approval-api', { end: '2026-02-09' });
+calendarStorage.events.remove('approval-api');
+calendarStorage.dateMarks.insert({ date: '2026-02-04', type: 'leave', label: '年假' });
+```
+
+通过 API 写入后，hook 自动刷新本页，并监听其他标签页的 storage 事件。查询返回普通记录，业务方应捕获增删改操作的异常。`get` 不存在返回 undefined，`remove` 返回布尔值，重复插入及更新不存在的记录会抛错。
+
+本地数据只属于当前浏览器与来源，不是服务端存储，多标签页同时写入也不提供事务保证。完整接口说明见 [存储层 README](../src/data/README.md)。可运行 `node scripts/check-calendar-storage.cjs` 验证初始化、CRUD、日期查询和错误保护，该脚本不会修改真实浏览器存储。
+
+### 7.1 从存储读取并展示任务
+
 创建 `src/demo.tsx`：
 
 ```tsx
 import React from 'react';
 
-import { Descriptions, Modal, theme } from 'antd';
+import { Alert, Button, Descriptions, Modal, Space } from 'antd';
 import dayjs from 'dayjs';
 
 import EventCalendar from './components/EventCalendar';
-import type { CalendarDateMark, CalendarEvent } from './components/EventCalendar';
-
-// 元旦放假与补班依据 2026 年放假安排，请假记录为演示数据。
-const dateMarks: CalendarDateMark[] = [
-  { date: dayjs('2026-01-01'), type: 'holiday', label: '元旦放假' },
-  { date: dayjs('2026-01-02'), type: 'holiday', label: '元旦放假调休' },
-  { date: dayjs('2026-01-03'), type: 'holiday', label: '元旦放假' },
-  { date: dayjs('2026-01-04'), type: 'workday', label: '元旦补班' },
-  { date: dayjs('2026-01-14'), type: 'leave', label: '请假（模拟）' },
-  { date: dayjs('2026-01-15'), type: 'leave', label: '请假（模拟）' },
-];
-
-// 模拟订单后台 v2.3 迭代：开发、联调、测试、缺陷修复与灰度发布。
-const getEvents = (token: ReturnType<typeof theme.useToken>['token']): CalendarEvent[] => [
-  {
-    key: 'scope-review',
-    title: '订单后台 v2.3 需求与接口评审',
-    start: dayjs('2026-01-05'),
-    end: dayjs('2026-01-05'),
-    color: token.colorWarning,
-  },
-  {
-    key: 'order-query-api',
-    title: '后端：订单组合筛选与分页接口',
-    start: dayjs('2026-01-06'),
-    end: dayjs('2026-01-09'),
-    color: token.colorPrimary,
-  },
-  {
-    key: 'order-filter-ui',
-    title: '前端：订单筛选栏与 URL 状态同步',
-    start: dayjs('2026-01-06'),
-    end: dayjs('2026-01-08'),
-    color: token.colorPrimary,
-  },
-  {
-    key: 'order-table-ui',
-    title: '前端：订单列表、排序与详情抽屉',
-    start: dayjs('2026-01-09'),
-    end: dayjs('2026-01-14'),
-    color: token.colorPrimary,
-  },
-  {
-    key: 'permission-api',
-    title: '后端：订单导出权限与操作审计',
-    start: dayjs('2026-01-08'),
-    end: dayjs('2026-01-13'),
-    color: token.colorPrimary,
-  },
-  {
-    key: 'export-worker',
-    title: '后端：异步导出队列与文件下载',
-    start: dayjs('2026-01-12'),
-    end: dayjs('2026-01-16'),
-    color: token.colorPrimary,
-  },
-  {
-    key: 'order-integration',
-    title: '联调：筛选参数、分页与异常提示',
-    start: dayjs('2026-01-15'),
-    end: dayjs('2026-01-16'),
-    color: token.colorWarning,
-  },
-  {
-    key: 'export-ui',
-    title: '前端：导出进度轮询与失败重试',
-    start: dayjs('2026-01-15'),
-    end: dayjs('2026-01-20'),
-    color: token.colorPrimary,
-  },
-  {
-    key: 'order-regression',
-    title: '测试：订单查询与角色权限回归',
-    start: dayjs('2026-01-19'),
-    end: dayjs('2026-01-22'),
-    color: token.colorSuccess,
-  },
-  {
-    key: 'pagination-fix',
-    title: '修复：切换筛选条件后页码未重置',
-    start: dayjs('2026-01-20'),
-    end: dayjs('2026-01-20'),
-    color: token.colorError,
-  },
-  {
-    key: 'export-load-test',
-    title: '测试：十万条订单导出压测',
-    start: dayjs('2026-01-21'),
-    end: dayjs('2026-01-23'),
-    color: token.colorSuccess,
-  },
-  {
-    key: 'export-memory-fix',
-    title: '修复：大批量导出内存峰值过高',
-    start: dayjs('2026-01-23'),
-    end: dayjs('2026-01-27'),
-    color: token.colorError,
-  },
-  {
-    key: 'release-acceptance',
-    title: '验收：导出修复复测与发布检查',
-    start: dayjs('2026-01-28'),
-    end: dayjs('2026-01-29'),
-    color: token.colorSuccess,
-  },
-  {
-    key: 'production-release',
-    title: '发布：订单后台 v2.3 灰度上线',
-    start: dayjs('2026-01-30'),
-    end: dayjs('2026-01-30'),
-    color: token.colorWarning,
-  },
-  {
-    key: 'release-observation',
-    title: '观察：灰度错误率与导出队列积压',
-    start: dayjs('2026-01-30'),
-    end: dayjs('2026-02-03'),
-    color: token.colorWarning,
-  },
-];
+import type { CalendarEvent } from './components/EventCalendar';
+import useCalendarData from './useCalendarData';
+import { calendarStorage } from './data/calendarStorage';
 
 const App: React.FC = () => {
-  const { token } = theme.useToken();
-  const events = React.useMemo(() => getEvents(token), [token]);
+  const { events, dateMarks, error } = useCalendarData();
+  const [editable, setEditable] = React.useState(false);
+  const [saveError, setSaveError] = React.useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = React.useState<CalendarEvent | null>(null);
+
+  const saveEventRange = (event: CalendarEvent, range: { start: dayjs.Dayjs; end: dayjs.Dayjs }) => {
+    try {
+      calendarStorage.events.update(event.key, {
+        start: range.start.format('YYYY-MM-DD'),
+        end: range.end.format('YYYY-MM-DD'),
+      });
+      setSaveError(null);
+    } catch (cause) {
+      setSaveError(cause instanceof Error ? cause.message : '无法保存日期');
+    }
+  };
 
   return (
     <>
+      <Space style={{ marginBottom: 16 }}>
+        <Button type={editable ? 'primary' : 'default'} onClick={() => setEditable((value) => !value)} aria-pressed={editable}>
+          {editable ? '退出编辑模式' : '开启编辑模式'}
+        </Button>
+        {editable && <span>拖动任务主体可整体移动；拖动两端 ↔ 可调整起止日期</span>}
+      </Space>
+      {saveError && <Alert type="error" showIcon message="任务日期保存失败" description={saveError} />}
+      {error && <Alert type="error" showIcon message="日历数据读取失败" description={error} />}
       <EventCalendar
         events={events}
+        editable={editable}
+        onEventResize={saveEventRange}
+        onEventMove={saveEventRange}
         dateMarks={dateMarks}
         defaultValue={dayjs('2026-01-01')}
         onEventClick={(event) => setSelectedEvent(event)}
@@ -980,7 +1490,7 @@ createRoot(container).render(<Demo />);
 
 入口检查容器是否存在，既满足 TypeScript 严格空值检查，也使模板配置错误更容易定位。任务条样式集中在 hook 中；入口还引入 `index.css`，用于下面的页面滚动条占位优化。
 
-### 7.1 点击任务，由业务方展示详情
+### 7.2 点击任务，由业务方展示详情
 
 `onEventClick(event, info)` 接收被点击的任务及片段上下文：`date` 是点击日期，`lane` 是泳道编号，`position` 是片段位置。泛型任务上的业务字段会保留。任务条的首段、中间段和末段都可以点击。
 
@@ -990,7 +1500,7 @@ createRoot(container).render(<Demo />);
 
 demo 用 `selectedEvent` 保存点击的任务，并通过声明式 `Modal` 显示标题、标识、起止日期和持续天数。通用组件不管理弹窗状态，业务方可替换为抽屉、详情页或自己的弹窗。
 
-### 7.2 避免详情弹窗引起页面宽度变化
+### 7.3 避免详情弹窗引起页面宽度变化
 
 弹窗会锁定背景滚动。传统滚动条消失后，可用页面宽度会变化；当前弹窗依赖还会设置 body 宽度来补偿滚动条。可以用 `scrollbar-gutter: stable` 固定滚动条占位，并取消重复的宽度补偿。[属性说明](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/scrollbar-gutter)
 
@@ -1016,7 +1526,7 @@ demo 用 `selectedEvent` 保存点击的任务，并通过声明式 `Modal` 显�
 
 验收时分别在页面有、无纵向滚动条的情况下反复打开与关闭详情，检查日历左右边缘不移动，弹窗打开期间背景不可滚动，关闭后恢复原滚动位置。
 
-### 7.3 标记节假日、补班、周末和请假
+### 7.4 标记节假日、补班、周末和请假
 
 通过 `dateMarks` 传入日期标记，每条包含 Dayjs 类型的 `date`、`type` 和可选的 `label`；周末通过 `date.day()` 自动识别，不必手动传入。
 
@@ -1035,13 +1545,158 @@ demo 用 `selectedEvent` 保存点击的任务，并通过声明式 `Modal` 显�
 
 示例中的 1 月 1–3 日放假、1 月 4 日补班依据 [2026 年放假安排](https://www.beijing.gov.cn/so/topics/1100000088/holiday.html)，这里的 holiday 表示放假区间，包含调休日期，不将整个区间都定义为法定节日当天。1 月 14–15 日请假是模拟数据。组件不内置全年节假日表，应由业务接口提供所需月份的日期标记。
 
-### 7.4 非工作日的任务连续展示
+### 7.5 非工作日的任务连续展示
 
 节假日、周末和请假日上的任务片段显示为半透明灰色，并带有半透明灰色虚线边框，表示当天不计工作量；普通工作日和补班日使用任务原色。个人请假优先级最高，因此补班日若同时请假，仍显示灰色。
 
 虚线边框使用 `box-sizing: border-box`，不增加片段高度；中间片段只绘制上下边框，任务起止处才补上相应侧边框，避免在相邻日期间产生竖向分隔。组件只调整片段的颜色和边框，不删除片段、不重算泳道、不改变首尾圆角和跨单元格连接。任务经过休息日仍连续可见，并保留详情点击功能。
 
 `renderEvent` 和 `onEventClick` 的 `info.isWorkingDay` 提供当前片段是否计入工作量的标记。这是日期级展示信息，不会自动调整任务起止日期，也不会将详情中的“持续天数”（自然日）改为工作日统计。请假标记当前作用于整个日历当天的所有任务。
+
+### 7.6 编辑模式与日期拖动
+
+页面顶部按钮控制 `editable`。当它为 true 且提供 `onEventResize` 时，任务真实起点和终点在鼠标悬停时出现 ↔ 手柄；单日任务同时提供左右两个手柄。
+
+拖动左端调整开始日期，右端调整结束日期。目标日期会显示虚线高亮，松开后触发 `onEventResize(event, { start, end })`。组件不直接修改 events，demo 在回调中主动调用 `calendarStorage.events.update`，成功后 hook 刷新页面；失败时展示错误并保留原任务。拖动完成后保存到 localStorage，页面刷新后加载修改后的日期。
+
+拖动时，同一任务的所有可见片段以 50% 透明度显示并带有阴影，鼠标拖影使用被拖动的任务片段，而不是仅显示手柄。松开、取消或退出编辑模式后恢复原样式。拖动过程中不重新分配泳道或改写任务日期；松开并成功保存后，按新起止日期重新计算泳道。开始晚于结束、禁用日期及 validRange 外的目标不会提交。拖回原日期不触发更新，取消拖动也不写入。
+
+任务手柄阻止点击和拖动冒泡，不触发详情或日期选择。当前使用桌面浏览器原生 HTML 拖放，支持当前面板中可见的跨周、相邻月份日期；不提供拖动自动翻月或触屏拖动。真实起止日期不在可视面板内时，需要先切换到相应月份。
+
+### 7.7 整体移动任务并保持工作日工期
+
+编辑模式下拖动任务主体，会触发独立的 `onEventMove(event, { start, end })`。拖动任意片段时，落点都作为整个任务的新开始日期，而不是按抓取片段计算偏移。两端手柄仍通过 `onEventResize` 调整单侧日期，手柄事件阻止冒泡，两种操作互不触发对方回调。
+
+这里保持的是**原任务包含的工作日数**，自然日跨度可能变化：先统计原起止区间的有效工作日，再从落点逐日消耗相同数量的工作日，最后一个工作日作为新结束日期。周末、holiday、leave 不计数，workday 补班计数；同日请假仍优先于补班。
+
+例如原任务有 3 个工作日，移动到周五，在没有额外标记的情况下结束于下周二。若落点本身是休息日，保留该开始日期并显示灰色片段，从后续工作日开始计数。原任务工作日数为 0 时不进行整体移动，可使用 resize 手动调整。拖回原开始日期不改变区间。
+
+整体移动会校验新开始和自动算出的结束日期是否超出 validRange 或为 disabledDate；不允许时取消提交。节假日表必须覆盖新旧日期范围，未提供的特殊日期只按普通周末规则处理。
+
+移动和 resize 均由 demo 的 `saveEventRange` 保存到 localStorage，刷新后保留。鼠标拖影、半透明样式和日期事件隔离继续生效。可执行 `node scripts/check-calendar-workdays.cjs` 验证工作日计算。
+
+### 7.8 悬停查看任务时长
+
+悬停任务任意片段时，Ant Design `Tooltip` 展示任务标题、起止日期、自然日时长及有效工作日数，均包含首尾日期。工作日统计复用 `countWorkingDays`，与整体移动一致：排除周末、节假日和请假，计入补班。任务日期或日期标记更新后提示自动重新计算。拖动期间关闭任务 Tooltip，避免遮挡目标日期；手柄保留原有的拖动操作提示。
+
+### 7.9 任务编辑的设计与实现思路
+
+前面几节介绍了功能接入，这一节说明这些功能如何协同。任务编辑包含两种语义：**resize 改变起止边界，允许工期变化；move 改变排期位置，保持有效工作日数。** 二者共享拖放交互和保存流程，但日期计算及回调相互独立。
+
+#### 7.9.1 先划分职责，再实现交互
+
+| 层次 | 负责什么 | 不在这一层处理的内容 |
+| --- | --- | --- |
+| demo 业务页 | 编辑开关、调用保存、展示错误和详情 | 泳道分配、拖放命中 |
+| EventCalendar | 手柄、拖放状态、候选日期校验、触发回调 | localStorage 写入 |
+| workday.ts | 工作日判断、工期统计、移动后的结束日期计算 | DOM 和交互状态 |
+| calendarStorage | 记录校验与持久化，成功后发送通知 | 日历绘制 |
+| useCalendarData | 读取数据、转回 Dayjs、通知 React 更新 | 推断用户要执行哪种编辑 |
+
+`events` 是组件接收的业务数据，`dragging` 和 `dropDate` 是临时交互状态。拖动期间不改写 events，只有有效 drop 才向外提交，这样取消拖动无需回滚，保存失败也不会留下未经保存的新排期。
+
+#### 7.9.2 用同一组状态表达三种拖动
+
+组件记录 `{ event, edge }`，其中 event 是拖动开始时的任务，edge 表示操作类型：
+
+| edge | 触发位置 | 新开始日期 | 新结束日期 | 对外回调 |
+| --- | --- | --- | --- | --- |
+| start | 左端手柄 | 落点日期 | 原结束日期 | onEventResize |
+| end | 右端手柄 | 原开始日期 | 落点日期 | onEventResize |
+| move | 任务主体任意片段 | 落点日期 | 按原工作日数推算 | onEventMove |
+
+`dragging = null` 表示当前未拖动。`dropDate` 仅用于高亮合法落点，不表示已提交的日期。`suppressClick` 用于阻止拖放结束附近产生的点击打开任务详情，下一次正常指针按下时解除。
+
+模式开关只控制是否提供编辑入口。关闭模式后清空临时拖动状态；开启模式但没有提供对应回调时，不启用该项编辑能力。普通任务详情与日期空白区域的选择行为继续保留。
+
+#### 7.9.3 拖放按“开始—命中—提交—清理”执行
+
+```mermaid
+flowchart TD
+  A[开启编辑模式] --> B[拖动任务主体或端点手柄]
+  B --> C[记录原任务和操作类型]
+  C --> D[dragover 根据目标日期计算候选区间]
+  D --> E{区间有效?}
+  E -->|是| F[高亮落点并允许放置]
+  E -->|否| G[取消高亮且不允许提交]
+  F --> H[drop 时重新校验]
+  H --> I{有效且日期确实变化?}
+  I -->|是| J[调用对应编辑回调]
+  I -->|否| K[不保存]
+  J --> L[清理拖动状态]
+  K --> L
+  G --> L
+```
+
+图中的无效状态仍允许用户继续拖向另一个日期；松开或取消时才结束本次操作。
+
+- `dragstart`：写入拖动标识并记录原任务，使用任务片段作为鼠标拖影。
+- `dragover`：读取日期单元格对应的日期，调用 `resizeRange` 计算候选结果。这个函数目前同时分派 move 和 resize，不进行存储写入。
+- `drop`：重新计算并校验，确认日期有变化后只调用一个回调。不能只依赖上一次高亮状态，以免把过时的候选值保存。
+- `dragend`：完成或取消后清空状态。任务条恢复透明度，目标高亮消失。
+
+同一任务的所有可见片段按任务 key 一起淡化并显示阴影。拖动期间关闭 Tooltip；不实时改变条形长度或泳道，以免原生拖动的源节点在过程中被移除。保存后的新数据才触发条形和泳道重新计算。
+
+#### 7.9.4 工期计算必须与非工作日展示一致
+
+`isWorkingDate` 是统一的判断入口，灰色任务片段、Tooltip 的工作日数和整体移动都使用同一规则：请假优先，其次补班，再判断节假日与周末。
+
+整体移动分两步：
+
+1. `countWorkingDays` 统计原任务闭区间内的工作日数 N。
+2. 从目标开始日期向后逐日遍历，仅遇到工作日才消耗一天；消耗第 N 天时得到新结束日期。
+
+例如原任务从周一到周三，共 3 个工作日；整体移到周五后，在没有额外日期标记时依次消耗周五、下周一、下周二，新结束日就是下周二。自然日跨度变长，但有效工期不变。
+
+resize 不调用这一顺延算法：把右端拖到周日，就以周日作为结束日，周日片段仍显示为非工作日。这样用户可以明确控制任务边界，而不会在松开手柄后看到端点又自动跳走。
+
+落点为休息日时，move 保留该日作为开始日期，后续工作日才消耗工期。原任务为零工作日时不执行整体移动，可用 resize 调整。这些规则应在业务接入时明确，而不是由组件静默猜测工期。
+
+#### 7.9.5 防止三类交互相互干扰
+
+日历单元格、任务主体、resize 手柄具有嵌套关系，因此事件边界很重要：
+
+- 手柄的拖动开始事件阻止冒泡，避免同时启动主体 move。
+- 任务点击和拖放阻止冒泡，避免触发 Calendar 的日期选择与切月。
+- 任务正常点击仍触发 onEventClick，拖动后的附带点击由 suppressClick 拦截。
+
+使用正常的 React 事件处理器即可隔离这些行为，不需要覆盖日历内部的 onSelect 或 onChange，也不需要查询并修改 Calendar 的内部状态。
+
+校验遵循两种操作的语义：resize 检查被拖动的端点，move 检查新的开始和结束日期。二者都不能造成开始晚于结束；相关目标不能被 disabledDate 禁用或超出 validRange。区间内部的非工作日允许存在，用连续灰色片段表示。
+
+#### 7.9.6 保存是一条单向数据流
+
+```mermaid
+flowchart LR
+  A[有效 drop] --> B[onEventMove 或 onEventResize]
+  B --> C[demo.saveEventRange]
+  C --> D[calendarStorage.events.update]
+  D --> E[localStorage 写入成功]
+  E --> F[发出本页更新通知]
+  F --> G[useCalendarData 读取并转换 Dayjs]
+  G --> H[新的 events 数组]
+  H --> I[重新分配 lane 并渲染]
+```
+
+两个回调可以复用 `saveEventRange`，因为它们最终都提交 `{ start, end }`；这不意味着二者采用同一种日期计算方式。保存前将 Dayjs 转成 YYYY-MM-DD 字符串，存储层验证后一次写入整个记录集合。
+
+写入失败时不发出成功通知，demo 展示错误，旧数据仍然保留。刷新后 `initialize()` 只在存储不存在时填入模拟数据，因此会加载已经保存的新日期。将来接入后端时，可替换业务保存函数；异步保存还需补充 pending 状态、重复提交防护与冲突处理，当前实现没有这些服务端机制。
+
+#### 7.9.7 验证重点与当前范围
+
+| 场景 | 预期行为 |
+| --- | --- |
+| 主体移动 | 仅触发 onEventMove，工作日数不变 |
+| 拖动左端或右端 | 仅触发 onEventResize，另一端保持原值 |
+| 跨周、跨月排期 | 根据提供的日期标记正确跳过非工作日 |
+| 颠倒日期、落到禁用日期、超出范围 | 不保存 |
+| 拖回原日期或取消拖动 | 不保存，视觉状态恢复 |
+| 拖动任务或手柄 | 不打开详情，不触发日期选择 |
+| 保存失败 | 显示错误，原日期不变 |
+| 保存后刷新 | 读取新日期，初始化不覆盖 |
+
+当前基于桌面原生 HTML 拖放，支持当前面板可见日期，不支持拖动自动翻月、触屏手势或键盘调整日期。移动后的日历跨度可以超过面板，但新结束日期仍须通过范围校验。节假日数据需要覆盖实际计算区间，否则缺失日期会按普通周末规则处理。
+
 
 ## 8. 启动和验收
 
