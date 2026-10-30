@@ -1,15 +1,17 @@
 import React from 'react';
 
-import { Alert, Button, Descriptions, Modal, Space } from 'antd';
+import { Alert, Button, Descriptions, Modal, Radio, Space } from 'antd';
 import dayjs from 'dayjs';
 
 import EventCalendar from './components/EventCalendar';
 import type { CalendarEvent } from './components/EventCalendar';
+import EventGantt from './components/EventGantt';
 import useCalendarData from './useCalendarData';
 import { calendarStorage } from './data/calendarStorage';
 
 const App: React.FC = () => {
   const { events, dateMarks, error } = useCalendarData();
+  const [view, setView] = React.useState<'calendar' | 'gantt'>('calendar');
   const [editable, setEditable] = React.useState(false);
   const [saveError, setSaveError] = React.useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = React.useState<CalendarEvent | null>(null);
@@ -29,6 +31,15 @@ const App: React.FC = () => {
   return (
     <>
       <Space style={{ marginBottom: 16 }}>
+        <Radio.Group
+          optionType="button"
+          options={[
+            { label: '日历', value: 'calendar' },
+            { label: '甘特图', value: 'gantt' },
+          ]}
+          value={view}
+          onChange={(event) => setView(event.target.value)}
+        />
         <Button type={editable ? 'primary' : 'default'} onClick={() => setEditable((value) => !value)} aria-pressed={editable}>
           {editable ? '退出编辑模式' : '开启编辑模式'}
         </Button>
@@ -36,15 +47,27 @@ const App: React.FC = () => {
       </Space>
       {saveError && <Alert type="error" showIcon message="任务日期保存失败" description={saveError} />}
       {error && <Alert type="error" showIcon message="日历数据读取失败" description={error} />}
-      <EventCalendar
-        events={events}
-        editable={editable}
-        onEventResize={saveEventRange}
-        onEventMove={saveEventRange}
-        dateMarks={dateMarks}
-        defaultValue={dayjs('2026-01-01')}
-        onEventClick={(event) => setSelectedEvent(event)}
-      />
+      {view === 'calendar' ? (
+        <EventCalendar
+          events={events}
+          editable={editable}
+          onEventResize={saveEventRange}
+          onEventMove={saveEventRange}
+          dateMarks={dateMarks}
+          defaultValue={dayjs('2026-01-01')}
+          onEventClick={(event) => setSelectedEvent(event)}
+        />
+      ) : (
+        <EventGantt
+          events={events}
+          editable={editable}
+          onEventResize={saveEventRange}
+          onEventMove={saveEventRange}
+          dateMarks={dateMarks}
+          defaultValue={dayjs('2026-01-01')}
+          onEventClick={(event) => setSelectedEvent(event)}
+        />
+      )}
       <Modal
         title="任务详情"
         open={selectedEvent !== null}

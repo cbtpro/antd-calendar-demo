@@ -5,20 +5,10 @@ import type { CalendarProps } from 'antd';
 import dayjs from 'dayjs';
 import type { Dayjs } from 'dayjs';
 
-import { countWorkingDays, isWorkingDate, moveEventRange } from './workday';
+import { getEventTooltipText, getRangePosition, isWorkingDate, resolveEventRange } from '../../shared/event';
 import { assignEventLanes } from './eventLayout';
 import useStyle from './useStyle';
-import type { CalendarDateMark, CalendarEvent, EventCalendarProps, EventRenderInfo } from './types';
-
-const getRangePosition = (date: Dayjs, event: CalendarEvent): EventRenderInfo['position'] => {
-  const starts = date.isSame(event.start, 'day');
-  const ends = date.isSame(event.end, 'day');
-
-  if (starts && ends) return 'single';
-  if (starts) return 'start';
-  if (ends) return 'end';
-  return 'middle';
-};
+import type { CalendarDateMark, CalendarEvent, EventCalendarProps } from './types';
 
 function EventCalendar<T extends CalendarEvent = CalendarEvent>({
   events,
@@ -57,32 +47,17 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
   // 每条任务只计算一次提示内容，避免为每天的片段重复统计工期。
   const eventTitles = useMemo(() => new Map(events.map((event) => [
     event.key,
-    [
-      event.title,
-      `日期：${event.start.format('YYYY-MM-DD')} 至 ${event.end.format('YYYY-MM-DD')}`,
-      `任务时长：${event.end.startOf('day').diff(event.start.startOf('day'), 'day') + 1} 个自然日`,
-      `有效工期：${countWorkingDays(event, isWorking)} 个工作日`,
-    ].join('\n'),
+    getEventTooltipText(event, isWorking),
   ])), [events, isWorking]);
   const resizeRange = useCallback((date: Dayjs) => {
     if (!editable || !dragging) return null;
-    let range: { start: Dayjs; end: Dayjs } | null;
-    if (dragging.edge === 'move') {
-      if (!onEventMove) return null;
-      range = moveEventRange(dragging.event, date, isWorking);
-    } else {
-      if (!onEventResize) return null;
-      range = {
-        start: dragging.edge === 'start' ? date : dragging.event.start,
-        end: dragging.edge === 'end' ? date : dragging.event.end,
-      };
-    }
-    if (!range || range.start.isAfter(range.end, 'day')) return null;
-    const targets = dragging.edge === 'move' ? [range.start, range.end] : [date];
-    const validRange = calendarProps.validRange;
-    if (targets.some((target) => calendarProps.disabledDate?.(target) ||
-      (validRange && (target.isBefore(validRange[0], 'day') || target.isAfter(validRange[1], 'day'))))) return null;
-    return range;
+    return resolveEventRange(dragging, date, {
+      isWorking,
+      allowMove: Boolean(onEventMove),
+      allowResize: Boolean(onEventResize),
+      disabledDate: calendarProps.disabledDate,
+      validRange: calendarProps.validRange,
+    });
   }, [editable, dragging, onEventResize, onEventMove, isWorking, calendarProps.disabledDate, calendarProps.validRange]);
 
   const dateCellRender = useCallback<NonNullable<CalendarProps<Dayjs>['dateCellRender']>>(

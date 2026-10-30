@@ -1,19 +1,12 @@
 import type { Dayjs } from 'dayjs';
+import { compareEvents } from '../../shared/event';
+import type { CalendarEvent } from '../../shared/event';
 
-interface EventRange {
-  key: string;
-  start: Dayjs;
-  end: Dayjs;
-}
+type EventRange = Pick<CalendarEvent, 'key' | 'start' | 'end'>;
 
 export const assignEventLanes = <T extends EventRange>(events: readonly T[]) => {
   const laneEnds: Dayjs[] = [];
-  const sortedEvents = [...events].sort(
-    (a, b) =>
-      a.start.startOf('day').valueOf() - b.start.startOf('day').valueOf() ||
-      b.end.startOf('day').valueOf() - a.end.startOf('day').valueOf() ||
-      a.key.localeCompare(b.key),
-  );
+  const sortedEvents = [...events].sort(compareEvents);
 
   return sortedEvents.map((event) => {
     // 结束日仍被任务占用，泳道只能从结束日的下一天开始复用。
