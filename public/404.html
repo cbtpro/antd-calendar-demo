@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>正在跳转…</title>
+  <script>
+    // GitHub Pages 是静态托管，没有前端路由回退：/antd-calendar-demo/tasks 这类
+    // 直链会命中本 404 页。这里把路径与查询参数改写成 Hash 路由地址再跳转，
+    // 保证无 # 的历史链接与分享链接也能打开对应页面。
+    (function () {
+      var BASE = '/antd-calendar-demo';
+      var pathname = window.location.pathname;
+      var hash = window.location.hash;
+      // 已是 hash 路由地址时不重复改写，避免 404 页被再次命中时出现 #/#/ 嵌套。
+      if (hash.indexOf('#/') === 0) {
+        if (pathname !== BASE + '/') window.location.replace(BASE + '/' + hash);
+        return;
+      }
+      var routePath = pathname.indexOf(BASE) === 0 ? pathname.slice(BASE.length) : '/';
+      if (routePath.charAt(0) !== '/') routePath = '/' + routePath;
+      window.location.replace(BASE + '/#' + routePath + window.location.search + window.location.hash);
+    })();
+  </script>
+</head>
+<body>
+  <p>正在跳转到 <a id="target" href="/antd-calendar-demo/">antd-calendar-demo</a>…</p>
+</body>
+</html>
