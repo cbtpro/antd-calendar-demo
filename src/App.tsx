@@ -1,7 +1,7 @@
 import React from 'react';
 
 import { ConfigProvider } from 'antd';
-import { BrowserRouter } from 'react-router-dom';
+import { HashRouter } from 'react-router-dom';
 
 import { createThemeConfig } from './theme';
 import { ANTD_LOCALES } from './locale';
@@ -20,14 +20,15 @@ const App: React.FC = () => {
       theme={createThemeConfig(isDark ? 'dark' : 'light')}
       button={{ autoInsertSpace: false }}
     >
-      <BrowserRouter basename={process.env.PUBLIC_URL}>
+      {/* Hash 模式不依赖服务器路由配置，GitHub Pages 等静态托管刷新不会 404。 */}
+      <HashRouter>
         <AppLayout
           isDark={isDark}
           onToggleTheme={toggleMode}
           locale={locale}
           onToggleLocale={toggleLocale}
         />
-      </BrowserRouter>
+      </HashRouter>
     </ConfigProvider>
   );
 };
