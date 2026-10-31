@@ -43,7 +43,7 @@ const App: React.FC = () => {
         <Button type={editable ? 'primary' : 'default'} onClick={() => setEditable((value) => !value)} aria-pressed={editable}>
           {editable ? '退出编辑模式' : '开启编辑模式'}
         </Button>
-        {editable && <span>拖动任务主体可整体移动；拖动两端 ↔ 可调整起止日期</span>}
+        {editable && <span>拖动任务主体可整体移动；拖动两端 ↔ 可调整起止日期；落点自动跳过周末、节假日与请假</span>}
       </Space>
       {saveError && <Alert type="error" showIcon message="任务日期保存失败" description={saveError} />}
       {error && <Alert type="error" showIcon message="日历数据读取失败" description={error} />}

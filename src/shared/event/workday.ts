@@ -8,6 +8,17 @@ export function isWorkingDate(date: Dayjs, marks: readonly CalendarDateMark[]) {
   return !marks.some((mark) => mark.type === 'holiday') && date.day() !== 0 && date.day() !== 6;
 }
 
+/** 不可排期原因，供吸附提示说明落点为何被排斥。 */
+export type NonWorkingReason = 'weekend' | 'holiday' | 'leave';
+
+/** 说明某天不能排期的原因；与 isWorkingDate 使用相同优先级。 */
+export function getNonWorkingReason(date: Dayjs, marks: readonly CalendarDateMark[]): NonWorkingReason | null {
+  if (marks.some((mark) => mark.type === 'leave')) return 'leave';
+  if (marks.some((mark) => mark.type === 'workday')) return null;
+  if (marks.some((mark) => mark.type === 'holiday')) return 'holiday';
+  return date.day() === 0 || date.day() === 6 ? 'weekend' : null;
+}
+
 /** 统计包含首尾日期的有效工作日数，与任务整体移动使用相同口径。 */
 export function countWorkingDays(
   event: Pick<CalendarEvent, 'start' | 'end'>,

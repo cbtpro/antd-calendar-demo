@@ -34,3 +34,10 @@ export interface EventRange {
 
 /** 拖动任务主体为整体移动，拖动两端为调整起止日期。 */
 export type DragEdge = 'start' | 'end' | 'move';
+
+export interface ResolvedEventRange {
+  /** 吸附并校验后的可保存区间。 */
+  range: EventRange;
+  /** 落点因非工作日被排斥时的原始日期，未吸附时不存在。 */
+  snappedFrom?: Dayjs;
+}

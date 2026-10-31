@@ -6,6 +6,7 @@ import dayjs from 'dayjs';
 import type { Dayjs } from 'dayjs';
 
 import { getEventTooltipText, getRangePosition, isWorkingDate, resolveEventRange } from '../../shared/event';
+import { notifyDropRejected, notifySnappedDrop } from '../../shared/feedback';
 import { assignEventLanes } from './eventLayout';
 import useStyle from './useStyle';
 import type { CalendarDateMark, CalendarEvent, EventCalendarProps } from './types';
@@ -211,9 +212,11 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
             if (!dragging) return;
             dragEvent.preventDefault();
             dragEvent.stopPropagation();
-            const range = resizeRange(date);
-            dragEvent.dataTransfer.dropEffect = range ? 'move' : 'none';
-            setDropDate(range ? date.format('YYYY-MM-DD') : null);
+            const resolved = resizeRange(date);
+            dragEvent.dataTransfer.dropEffect = resolved ? 'move' : 'none';
+            // 高亮吸附后的实际落点，避免用户误以为任务会停在周末或假期上。
+            const target = resolved ? (dragging.edge === 'end' ? resolved.range.end : resolved.range.start) : null;
+            setDropDate(target ? target.format('YYYY-MM-DD') : null);
           }}
           onDragLeave={(dragEvent) => {
             if (!dragEvent.currentTarget.contains(dragEvent.relatedTarget as Node | null)) setDropDate(null);
@@ -222,12 +225,22 @@ function EventCalendar<T extends CalendarEvent = CalendarEvent>({
             if (!dragging) return;
             dragEvent.preventDefault();
             dragEvent.stopPropagation();
-            const range = resizeRange(date);
+            const resolved = resizeRange(date);
             const original = dragging.event;
+            const edge = dragging.edge;
             setDragging(null);
             setDropDate(null);
-            if (range && (!range.start.isSame(original.start, 'day') || !range.end.isSame(original.end, 'day'))) {
-              if (dragging.edge === 'move') onEventMove?.(original, range);
+            if (!resolved) {
+              notifyDropRejected();
+              return;
+            }
+            const { range, snappedFrom } = resolved;
+            const landing = edge === 'end' ? range.end : range.start;
+            if (snappedFrom) {
+              notifySnappedDrop(snappedFrom, landing, marksByDate.get(snappedFrom.format('YYYY-MM-DD')) ?? []);
+            }
+            if (!range.start.isSame(original.start, 'day') || !range.end.isSame(original.end, 'day')) {
+              if (edge === 'move') onEventMove?.(original, range);
               else onEventResize?.(original, range);
             }
           }}

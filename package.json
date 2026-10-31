@@ -6,11 +6,12 @@
   "dependencies": {
     "@ant-design/icons": "^6.3.4",
     "@emotion/react": "^11.14.0",
-    "antd": "5.0.2",
+    "antd": "6.6.8",
     "clsx": "^2.1.1",
     "dayjs": "^1.11.11",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-router-dom": "^6.30.6"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

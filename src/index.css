@@ -1,27 +1,76 @@
 /**
- * Copyright 2026 cbtpro
- * 
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- * 
- *     https://www.apache.org/licenses/LICENSE-2.0
- * 
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * 基础 CSS Reset
+ * 消除浏览器默认 margin / padding / box-sizing，保证 antd ConfigProvider 的主题生效前
+ * 页面没有奇怪的默认空白或滚动条抖动。
+ * 注释保留每一条的目的，便于按需收窄。
  */
 
-@supports (scrollbar-gutter: stable) {
-  html.event-calendar-demo {
-    /* 弹窗隐藏滚动条时仍保留占位，避免日历列宽变化。 */
-    scrollbar-gutter: stable;
-  }
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
 
-  html.event-calendar-demo body {
-    /* 浏览器已经预留空间，无需弹窗再次缩减页面宽度；保留滚动锁定。 */
-    width: auto;
-  }
+html,
+body {
+  margin: 0;
+  padding: 0;
+  /* 后台管理布局以视口为边界，高度必须可继承，避免页面出现外层滚动条。 */
+  height: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
+    'Noto Color Emoji';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/** 禁用浏览器默认聚焦描边 —— antd 组件自行提供 focus 样式。 */
+:focus {
+  outline: none;
+}
+
+img,
+svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/** h1-h6 默认 margin 清空，统一交由各组件（例如 Modal/Descriptions）控制间距。 */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  margin: 0;
+  font-weight: 500;
+}
+
+p {
+  margin: 0;
+}
+
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/**
+ * 根容器铺满视口：外层永不滚动，溢出交由左侧菜单和内容区各自处理。
+ * 这样弹窗锁定滚动时也不会影响页面宽度。
+ */
+#container {
+  height: 100%;
+  min-height: 100vh;
 }
